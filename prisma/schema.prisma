@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MeliConnectionStatus {
+  ACTIVE
+  REAUTH_REQUIRED
+  DISCONNECTED
+}
+
+/// Estado temporário do fluxo OAuth (anti-CSRF + PKCE). Uso único, com expiração.
+/// Nunca armazena o `state` em claro: apenas o SHA-256.
+model OAuthState {
+  id              String    @id @default(cuid())
+  stateHash       String    @unique @map("state_hash")
+  /// SHA-256 do nonce gravado em cookie HttpOnly no navegador que iniciou o fluxo.
+  bindingHash     String    @map("binding_hash")
+  /// code_verifier PKCE criptografado (AES-256-GCM). Nulo quando PKCE está desabilitado.
+  codeVerifierEnc String?   @map("code_verifier_enc")
+  expiresAt       DateTime  @map("expires_at")
+  consumedAt      DateTime? @map("consumed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("oauth_states")
+}
+
+/// Conta vendedora conectada. Tokens sempre criptografados em repouso.
+model MeliConnection {
+  id                   String               @id @default(cuid())
+  meliUserId           String               @unique @map("meli_user_id")
+  nickname             String?
+  siteId               String?              @map("site_id")
+  accessTokenEnc       String?              @map("access_token_enc")
+  refreshTokenEnc      String?              @map("refresh_token_enc")
+  accessTokenExpiresAt DateTime?            @map("access_token_expires_at")
+  scope                String?
+  status               MeliConnectionStatus @default(ACTIVE)
+  /// Incrementado a cada gravação de tokens (rotação do refresh token).
+  tokenVersion         Int                  @default(0) @map("token_version")
+  /// Lease distribuído para impedir renovações concorrentes entre instâncias.
+  refreshLockId        String?              @map("refresh_lock_id")
+  refreshLockUntil     DateTime?            @map("refresh_lock_until")
+  lastConnectedAt      DateTime?            @map("last_connected_at")
+  lastRefreshedAt      DateTime?            @map("last_refreshed_at")
+  lastErrorCode        String?              @map("last_error_code")
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @updatedAt @map("updated_at")
+
+  @@map("meli_connections")
+}
+
+/// Limite de tentativas de login do administrador (por hash do IP).
+model AdminLoginThrottle {
+  keyHash     String    @id @map("key_hash")
+  failures    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("admin_login_throttle")
+}

@@ -1,0 +1,138 @@
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1d2330;
+  --muted: #5e6675;
+  --border: #dfe3ea;
+  --primary: #2d3277;
+  --primary-hover: #23275e;
+  --accent: #ffe600;
+  --success-bg: #e7f6ec;
+  --success-fg: #1b6b3a;
+  --warn-bg: #fff4dc;
+  --warn-fg: #8a5a00;
+  --danger-bg: #fdecec;
+  --danger-fg: #a12626;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151c;
+    --surface: #1b1f29;
+    --text: #e8ebf1;
+    --muted: #9aa3b2;
+    --border: #2c3240;
+    --primary: #7f86ff;
+    --primary-hover: #969cff;
+    --success-bg: #12301f;
+    --success-fg: #7fd9a1;
+    --warn-bg: #352a0e;
+    --warn-fg: #f2c66b;
+    --danger-bg: #3a1717;
+    --danger-fg: #f39a9a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 20px;
+  background: var(--surface);
+  border-bottom: 3px solid var(--accent);
+}
+.brand { font-weight: 700; font-size: 1.1rem; }
+.brand-sub { color: var(--muted); font-size: 0.9rem; }
+
+.container { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+
+.breadcrumb { color: var(--muted); font-size: 0.85rem; margin: 0 0 4px; }
+h1 { font-size: 1.5rem; margin: 0 0 20px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h2 { font-size: 1.05rem; margin: 0 0 12px; }
+
+.status-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.badge.connected { background: var(--success-bg); color: var(--success-fg); }
+.badge.disconnected { background: var(--border); color: var(--muted); }
+.badge.reauth_required { background: var(--warn-bg); color: var(--warn-fg); }
+
+.details { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; margin: 16px 0 0; }
+.details dt { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.details dd { margin: 2px 0 0; font-weight: 500; overflow-wrap: anywhere; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
+.btn-danger { background: transparent; color: var(--danger-fg); border-color: var(--danger-fg); }
+.btn-danger-solid { background: var(--danger-fg); color: var(--surface); }
+
+.alert { padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 0.95rem; }
+.alert.success { background: var(--success-bg); color: var(--success-fg); }
+.alert.error { background: var(--danger-bg); color: var(--danger-fg); }
+.alert.warn { background: var(--warn-bg); color: var(--warn-fg); }
+
+.confirm-box { margin-top: 16px; padding: 14px; border: 1px dashed var(--danger-fg); border-radius: 8px; }
+.confirm-box p { margin: 0 0 10px; }
+
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+input[type="text"], input[type="password"] {
+  width: 100%;
+  max-width: 360px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.muted { color: var(--muted); font-size: 0.9rem; }
+.login-card { max-width: 420px; margin: 40px auto; }
+code { font-size: 0.85em; overflow-wrap: anywhere; }

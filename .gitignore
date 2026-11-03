@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# env (nunca versionar credenciais reais)
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+.vercel/
+.DS_Store
+npm-debug.log*
