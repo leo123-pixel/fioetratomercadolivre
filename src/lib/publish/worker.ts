@@ -63,6 +63,7 @@ interface ItemSnapshot {
   id: string;
   permalink?: string | null;
   status?: string | null;
+  sub_status?: string[] | null;
   user_product_id?: string | null;
   family_id?: string | number | null;
   price?: number | null;
@@ -75,10 +76,18 @@ interface ItemSnapshot {
 export async function findExistingItem(accountId: string, sku: string): Promise<ItemSnapshot | null> {
   if (!/^\d{1,20}$/.test(accountId)) return null;
   const { data } = await meliRequest<{ results?: unknown[] }>(`/users/${accountId}/items/search`, { auth: true, query: { seller_sku: sku } });
-  const id = (data?.results ?? []).find((r): r is string => typeof r === "string" && /^MLB\d+$/.test(r));
-  if (!id) return null;
-  const item = await meliRequest<ItemSnapshot>(`/items/${id}`, { auth: true });
-  return item.data;
+  const ids = (data?.results ?? []).filter((r): r is string => typeof r === "string" && /^MLB\d+$/.test(r)).slice(0, 10);
+  // Anúncios encerrados ou excluídos (de uma publicação anterior do mesmo produto) não contam:
+  // só um anúncio vigente com o SKU indica que o produto já está publicado.
+  for (const id of ids) {
+    const item = await meliRequest<ItemSnapshot>(`/items/${id}`, { auth: true });
+    if (!isEndedItem(item.data)) return item.data;
+  }
+  return null;
+}
+
+export function isEndedItem(item: Pick<ItemSnapshot, "status" | "sub_status">): boolean {
+  return item.status === "closed" || (item.sub_status ?? []).includes("deleted");
 }
 
 async function finalizeSuccess(sql: Sql, job: PublicationJob, ctx: PublishContext, item: ItemSnapshot, how: "created" | "reconciled" | "already_existed") {

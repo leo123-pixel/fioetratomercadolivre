@@ -268,7 +268,7 @@ model ListingDraft {
   lastError             String?   @map("last_error")
 
   product  Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
-  listing  MarketplaceListing?
+  listings MarketplaceListing[]
   jobs     PublicationJob[]
   events   ListingEvent[]
 
@@ -281,7 +281,7 @@ model MarketplaceListing {
   id                   Int       @id @default(autoincrement())
   productId            Int       @map("product_id")
   adsProductId         Int       @map("ads_product_id")
-  listingDraftId       Int       @unique @map("listing_draft_id")
+  listingDraftId       Int       @map("listing_draft_id")
   marketplaceAccountId String    @map("marketplace_account_id")
   marketplaceItemId    String    @unique @map("marketplace_item_id")
   userProductId        String?   @map("user_product_id")
@@ -303,7 +303,10 @@ model MarketplaceListing {
   draft   ListingDraft @relation(fields: [listingDraftId], references: [id], onDelete: Restrict)
   events  ListingEvent[]
 
-  @@unique([productId, marketplaceAccountId])
+  /// Unicidade do anúncio vigente (status fora de closed/deleted) por rascunho e por produto+conta:
+  /// índices únicos parciais criados na migration 20261106000000_republish_ended_listings.
+  @@index([listingDraftId])
+  @@index([productId])
   @@index([adsProductId])
   @@map("marketplace_listings")
 }

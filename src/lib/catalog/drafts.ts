@@ -88,7 +88,10 @@ export const DRAFT_SELECT = `
          d.created_at AS "createdAt", d.updated_at AS "updatedAt"
   FROM listing_drafts d
   JOIN products p ON p.id = d.product_id
-  LEFT JOIN marketplace_listings ml ON ml.listing_draft_id = d.id`;
+  LEFT JOIN LATERAL (
+    SELECT * FROM marketplace_listings x WHERE x.listing_draft_id = d.id
+    ORDER BY (x.status NOT IN ('closed', 'deleted')) DESC, x.id DESC LIMIT 1
+  ) ml ON true`;
 
 export async function getDraft(sql: Sql, id: number): Promise<ListingDraft | null> {
   const rows = await sql.query<ListingDraft>(`${DRAFT_SELECT} WHERE d.id = $1::int`, [id]);
@@ -153,7 +156,7 @@ export async function createDrafts(sql: Sql, productIds: number[]): Promise<Crea
     await sql.transaction(async (tx) => {
       const [product] = await tx.query<{ id: number; inactive: boolean; name: string; published: boolean }>(
         `SELECT p.id, p.inactive, COALESCE(p.name_custom, p.name_original) AS name,
-                EXISTS (SELECT 1 FROM marketplace_listings ml WHERE ml.product_id = p.id) AS published
+                EXISTS (SELECT 1 FROM marketplace_listings ml WHERE ml.product_id = p.id AND ml.status NOT IN ('closed', 'deleted')) AS published
          FROM products p WHERE p.id = $1::int`,
         [productId],
       );

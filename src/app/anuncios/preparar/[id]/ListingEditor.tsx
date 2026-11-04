@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, formatNumber, formatPercent, PUBLICATION_JOB_LABEL } from "@/lib/format";
+import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, formatNumber, formatPercent, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
 
 // ---------------------------------------------------------------------------- tipos
 
@@ -236,6 +236,20 @@ export function ListingEditor(props: {
     };
   }
 
+  /** Anúncio anterior encerrado/excluído no ML: reabre o rascunho (nova versão) sem publicar nada. */
+  async function reopenForRepublish() {
+    if (!window.confirm("O sistema vai confirmar no Mercado Livre que o anúncio anterior foi encerrado ou excluído e reabrir este rascunho para edição. Nada será publicado agora. Continuar?")) return;
+    setBusy("republish");
+    setFeedback(null);
+    try {
+      const r = await api<{ previousItemId: string; previousStatus: string }>(`/api/listing-drafts/${draft.id}/republish`, { body: {} });
+      if (!r.ok) return setFeedback({ kind: "error", text: errorText(r) });
+      window.location.reload();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function save(quiet = false): Promise<boolean> {
     setBusy("save");
     if (!quiet) setFeedback(null);
@@ -326,7 +340,14 @@ export function ListingEditor(props: {
           {draft.marketplaceItemId && (
             <div className="toolbar">
               <strong>{draft.marketplaceItemId}</strong>
-              {draft.listingStatus && <span className="chip">{draft.listingStatus}</span>}
+              {draft.listingStatus && (
+                <span className={`chip ${listingStatusLabel(draft.listingStatus).tone}`}>{listingStatusLabel(draft.listingStatus).text}</span>
+              )}
+              {draft.status === "PUBLISHED" && (draft.listingStatus === "closed" || draft.listingStatus === "deleted") && (
+                <button className="btn btn-primary btn-sm" type="button" disabled={busy !== null} onClick={reopenForRepublish}>
+                  {busy === "republish" ? "Consultando o Mercado Livre…" : "Preparar nova publicação"}
+                </button>
+              )}
               {draft.permalink && (
                 <a className="btn btn-secondary btn-sm" href={draft.permalink} target="_blank" rel="noopener noreferrer">
                   Abrir no Mercado Livre

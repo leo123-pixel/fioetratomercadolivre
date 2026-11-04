@@ -14,7 +14,7 @@ import { createDrafts, getDraft, updateDraft } from "@/lib/catalog/drafts";
 import { getCapabilities } from "@/lib/meli/capabilities";
 import { getCategory, getCategoryAttributes, type MeliAttribute } from "@/lib/meli/categories";
 import { buildItemPayload, fingerprint, loadContext } from "@/lib/publish/payload";
-import { getPublicationJob, listAttempts, requestPublication } from "@/lib/publish/service";
+import { getPublicationJob, listAttempts, reopenForRepublish, requestPublication } from "@/lib/publish/service";
 import { checkAttributes, issuesFromMeli, validateDraft } from "@/lib/publish/validate";
 import { MeliHttpError } from "@/lib/meli/api";
 import { MAX_RECONCILE, processPublicationJobs } from "@/lib/publish/worker";
@@ -609,5 +609,68 @@ describe("status do anúncio depois de publicado (somente leitura no ML)", () =>
     const n = parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 1234567890 })!;
     expect(await processItemNotification(t.sql(), n)).toBe("closed");
     expect(await status()).toBe("closed");
+  });
+});
+
+describe("republicação depois de anúncio encerrado ou excluído no ML", () => {
+  async function publishedPilot() {
+    const ml = await setup();
+    const draftId = await seedValidatedDraft();
+    await publish(draftId);
+    await runWorker();
+    return { ...ml, draftId, item: [...ml.state.items.values()].find((i) => i.id === "MLB1000")! };
+  }
+
+  it("bloqueia enquanto o anúncio está ativo ou pausado (status relido no ML, não confiado no banco)", async () => {
+    const { draftId, item } = await publishedPilot();
+    // banco diz "deleted", mas o ML diz ativo: a releitura impede a reabertura
+    await t.sql().execute(`UPDATE marketplace_listings SET status = 'deleted'`);
+    await expect(reopenForRepublish(t.sql(), draftId, "admin:test")).rejects.toMatchObject({ code: "listing_still_active" });
+    item.status = "paused";
+    await expect(reopenForRepublish(t.sql(), draftId, "admin:test")).rejects.toMatchObject({ code: "listing_still_active" });
+    expect((await getDraft(t.sql(), draftId))!.status).toBe("PUBLISHED");
+  });
+
+  it("excluído no ML: reabre com nova versão, exige nova validação e cria um NOVO anúncio sem reaproveitar o excluído", async () => {
+    const { draftId, item, createCalls } = await publishedPilot();
+    item.status = "closed";
+    item.sub_status = ["deleted"];
+    const before = (await getDraft(t.sql(), draftId))!;
+
+    const r = await reopenForRepublish(t.sql(), draftId, "admin:test");
+    expect(r).toEqual({ previousItemId: "MLB1000", previousStatus: "deleted" });
+    const reopened = (await getDraft(t.sql(), draftId))!;
+    expect(reopened).toMatchObject({ status: "DRAFT", version: before.version + 1, validatedFingerprint: null });
+    // sem nova validação não publica
+    await expect(publish(draftId)).rejects.toBeTruthy();
+
+    const v = (await validateDraft(t.sql(), draftId))!;
+    expect(v.issues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(v.status).toBe("VALIDATED");
+    await publish(draftId);
+    await runWorker();
+
+    expect(createCalls()).toHaveLength(2);
+    const d = (await getDraft(t.sql(), draftId))!;
+    expect(d).toMatchObject({ status: "PUBLISHED", marketplaceItemId: "MLB1001", listingStatus: "active" });
+    const rows = await t.sql().query<{ item: string; status: string }>(`SELECT marketplace_item_id AS item, status FROM marketplace_listings ORDER BY id`);
+    expect(rows).toEqual([
+      { item: "MLB1000", status: "deleted" },
+      { item: "MLB1001", status: "active" },
+    ]);
+    const events = await t.sql().query<{ type: string }>(`SELECT event_type AS type FROM marketplace_listing_events WHERE listing_draft_id = $1 ORDER BY id`, [draftId]);
+    expect(events.map((e) => e.type)).toContain("reopened_for_republish");
+  });
+
+  it("o banco nunca aceita dois anúncios vigentes para o mesmo produto e conta", async () => {
+    const { draftId } = await publishedPilot();
+    const [p] = await t.sql().query<{ productId: number }>(`SELECT product_id AS "productId" FROM listing_drafts WHERE id = $1`, [draftId]);
+    await expect(
+      t.sql().execute(
+        `INSERT INTO marketplace_listings (product_id, ads_product_id, listing_draft_id, marketplace_account_id, marketplace_item_id, category_id, price, quantity, status)
+         VALUES ($1, 1804, $2, '42', 'MLB9999', 'MLB264861', 10, 1, 'active')`,
+        [p.productId, draftId],
+      ),
+    ).rejects.toBeTruthy();
   });
 });

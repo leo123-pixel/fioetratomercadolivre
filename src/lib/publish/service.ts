@@ -5,6 +5,7 @@ import { isUniqueViolation, type Sql } from "../sql";
 import { getCapabilities } from "../meli/capabilities";
 import { recordEvent } from "./events";
 import { fingerprint, loadContext } from "./payload";
+import { syncItem } from "./listings";
 
 /**
  * Comando de publicação confirmado pelo administrador.
@@ -114,7 +115,8 @@ export async function requestPublication(sql: Sql, req: PublishRequest): Promise
         throw new PublishRejectedError("content_changed", "Imagens ou dados mudaram depois da validação. Valide novamente.");
       }
       const [listed] = await tx.query<{ itemId: string }>(
-        `SELECT marketplace_item_id AS "itemId" FROM marketplace_listings WHERE product_id = $1::int AND marketplace_account_id = $2::text`,
+        `SELECT marketplace_item_id AS "itemId" FROM marketplace_listings
+         WHERE product_id = $1::int AND marketplace_account_id = $2::text AND status NOT IN ('closed', 'deleted')`,
         [ctx.draft.productId, caps.meliUserId],
       );
       if (listed) throw new PublishRejectedError("already_published", `Produto já publicado nesta conta (${listed.itemId}).`);
@@ -248,4 +250,50 @@ export function requesterFromSession(sid: string | undefined | null): string {
 export async function currentAccountId(): Promise<string | null> {
   const conn = await getStore().getCurrentConnection();
   return conn?.meliUserId ?? null;
+}
+
+/**
+ * Libera uma nova publicação de um produto cujo anúncio foi encerrado ou excluído no Mercado Livre.
+ *
+ * Antes de liberar, relê o anúncio no ML (somente leitura) para não confiar em status desatualizado.
+ * O rascunho volta a DRAFT com nova versão (exige nova validação e nova confirmação); o anúncio
+ * antigo fica guardado como histórico. Nada é enviado ao ML aqui.
+ */
+export async function reopenForRepublish(sql: Sql, draftId: number, requestedBy: string): Promise<{ previousItemId: string; previousStatus: string }> {
+  const [current] = await sql.query<{ status: string; itemId: string | null }>(
+    `SELECT d.status, ml.marketplace_item_id AS "itemId"
+     FROM listing_drafts d
+     LEFT JOIN LATERAL (
+       SELECT marketplace_item_id FROM marketplace_listings x WHERE x.listing_draft_id = d.id
+       ORDER BY (x.status NOT IN ('closed', 'deleted')) DESC, x.id DESC LIMIT 1
+     ) ml ON true
+     WHERE d.id = $1::int`,
+    [draftId],
+  );
+  if (!current) throw new PublishRejectedError("not_found", "Rascunho não encontrado.", 404);
+  if (current.status !== "PUBLISHED" || !current.itemId) {
+    throw new PublishRejectedError("not_published", "Só é possível republicar um rascunho cujo anúncio foi publicado e depois encerrado ou excluído.");
+  }
+  const status = await syncItem(sql, current.itemId);
+  if (status !== "closed" && status !== "deleted") {
+    throw new PublishRejectedError(
+      "listing_still_active",
+      `O anúncio ${current.itemId} ainda não está encerrado nem excluído no Mercado Livre (status: ${status ?? "desconhecido"}). Encerre ou exclua no ML antes de republicar.`,
+    );
+  }
+  const changed = await sql.execute(
+    `UPDATE listing_drafts SET status = 'DRAFT', version = version + 1, validated_version = NULL, validated_fingerprint = NULL,
+       validated_at = NULL, validation_result = NULL, last_error = NULL, updated_at = now()
+     WHERE id = $1::int AND status = 'PUBLISHED'`,
+    [draftId],
+  );
+  if (!changed) throw new PublishRejectedError("conflict", "O rascunho mudou durante a operação. Recarregue a página.");
+  await recordEvent(sql, {
+    draftId,
+    type: "reopened_for_republish",
+    from: "PUBLISHED",
+    to: "DRAFT",
+    details: { previousItemId: current.itemId, previousStatus: status, requestedBy },
+  });
+  return { previousItemId: current.itemId, previousStatus: status };
 }

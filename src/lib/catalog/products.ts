@@ -78,7 +78,10 @@ const BASE_FROM = `
     FROM product_stocks st WHERE st.product_id = p.id
   ) stk ON true
   LEFT JOIN listing_drafts d ON d.product_id = p.id
-  LEFT JOIN marketplace_listings ml ON ml.product_id = p.id`;
+  LEFT JOIN LATERAL (
+    SELECT * FROM marketplace_listings x WHERE x.product_id = p.id
+    ORDER BY (x.status NOT IN ('closed', 'deleted')) DESC, x.id DESC LIMIT 1
+  ) ml ON true`;
 
 export async function listProducts(sql: Sql, filters: ProductFilters): Promise<ProductListResult> {
   const settings = await getCatalogSettings(sql);
@@ -109,8 +112,8 @@ export async function listProducts(sql: Sql, filters: ProductFilters): Promise<P
   if (filters.draft === "none") where.push(`d.id IS NULL`);
   if (filters.draft === "any") where.push(`d.id IS NOT NULL`);
   if (filters.draft === "DRAFT" || filters.draft === "READY") where.push(`d.status = ${add(filters.draft)}::text`);
-  if (filters.draft === "published") where.push(`ml.id IS NOT NULL`);
-  if (filters.draft === "unpublished") where.push(`ml.id IS NULL`);
+  if (filters.draft === "published") where.push(`ml.id IS NOT NULL AND ml.status NOT IN ('closed', 'deleted')`);
+  if (filters.draft === "unpublished") where.push(`(ml.id IS NULL OR ml.status IN ('closed', 'deleted'))`);
   if (filters.price === "with") where.push(`rp.price IS NOT NULL`);
   if (filters.price === "without") where.push(`rp.price IS NULL`);
 

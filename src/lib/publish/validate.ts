@@ -182,7 +182,10 @@ export function checkContent(ctx: PublishContext, category: CategoryDetail | nul
     issues.push(err("DESCRIPTION_HTML", "A descrição deve ser texto simples (sem HTML).", "internal", "description"));
   }
   if (d.productInactive) issues.push(err("PRODUCT_INACTIVE", "Produto inativo na ADS.", "internal"));
-  if (d.marketplaceItemId) issues.push(err("ALREADY_PUBLISHED", `Produto já publicado (${d.marketplaceItemId}).`, "internal"));
+  // Anúncio anterior encerrado/excluído no ML não bloqueia: o rascunho foi reaberto para republicação.
+  if (d.marketplaceItemId && d.listingStatus !== "closed" && d.listingStatus !== "deleted") {
+    issues.push(err("ALREADY_PUBLISHED", `Produto já publicado (${d.marketplaceItemId}).`, "internal"));
+  }
   return issues;
 }
 

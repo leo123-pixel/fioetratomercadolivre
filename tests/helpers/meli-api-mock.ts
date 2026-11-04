@@ -181,8 +181,9 @@ export function mockMeliApi(overrides: Partial<MeliState> = {}) {
     const search = path.match(/^\/users\/(\d+)\/items\/search$/);
     if (method === "GET" && search) {
       const sku = url.searchParams.get("seller_sku") ?? "";
-      const item = state.items.get(sku);
-      return json({ seller_id: search[1], results: item ? [item.id] : [], paging: { total: item ? 1 : 0 } });
+      // Itens com o SKU, inclusive anúncios antigos guardados como "<sku>#<id>" (republicação).
+      const ids = [...state.items.entries()].filter(([k]) => k === sku || k.startsWith(`${sku}#`)).map(([, v]) => v.id);
+      return json({ seller_id: search[1], results: ids, paging: { total: ids.length } });
     }
     if (method === "GET" && path === "/items" && url.searchParams.get("ids")) {
       const ids = url.searchParams.get("ids")!.split(",");
@@ -218,6 +219,8 @@ export function mockMeliApi(overrides: Partial<MeliState> = {}) {
           category_id: payload.category_id,
           title: payload.title ?? payload.family_name,
         };
+        const previous = state.items.get(sku);
+        if (previous) state.items.set(`${sku}#${String(previous.id)}`, previous);
         state.items.set(sku, item);
         return item;
       };
