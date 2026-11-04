@@ -204,12 +204,15 @@ export function checkImages(ctx: PublishContext, category: CategoryDetail | null
 
 /** Converte a resposta de erro de POST /items/validate em pendências. */
 export function issuesFromMeli(e: MeliHttpError): ValidationIssue[] {
-  if (e.causes.length) {
-    return e.causes.map((c) =>
-      (c.type === "warning" ? warn : err)(`ML_${(c.code ?? "cause").toUpperCase()}`, c.message ?? c.code ?? "Erro informado pelo Mercado Livre", "mercadolivre"),
-    );
+  const fromCauses = e.causes.map((c) =>
+    (c.type === "warning" ? warn : err)(`ML_${(c.code ?? "cause").toUpperCase()}`, c.message ?? c.code ?? "Erro informado pelo Mercado Livre", "mercadolivre"),
+  );
+  // A recusa (HTTP 4xx) sem nenhuma causa do tipo erro: o motivo real está na mensagem principal
+  // da resposta. Sem isso a tela mostraria só avisos e esconderia por que o anúncio foi recusado.
+  if (!fromCauses.some((i) => i.severity === "error")) {
+    fromCauses.unshift(err(`ML_${(e.code ?? e.kind).toUpperCase()}`, `Recusado pelo Mercado Livre: ${e.message}`, "mercadolivre"));
   }
-  return [err(`ML_${(e.code ?? e.kind).toUpperCase()}`, e.message, "mercadolivre")];
+  return fromCauses;
 }
 
 export async function validateDraft(sql: Sql, draftId: number, opts: { remote?: boolean } = {}): Promise<ValidationResult | null> {

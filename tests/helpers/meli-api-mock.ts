@@ -76,7 +76,7 @@ export type CreateMode = "ok" | "timeout_after_create" | "timeout_before_create"
 export interface MeliState {
   tags: string[];
   createMode: CreateMode[];
-  validateMode: "ok" | "400" | "500";
+  validateMode: "ok" | "400" | "400warn" | "500";
   /** SKU -> item criado */
   items: Map<string, Record<string, unknown>>;
   nextItem: number;
@@ -170,6 +170,7 @@ export function mockMeliApi(overrides: Partial<MeliState> = {}) {
     }
     if (method === "POST" && path === "/items/validate") {
       if (state.validateMode === "400") return json({ message: "Validation error", error: "validation_error", status: 400, cause: [{ code: "item.attributes.missing_required", message: "The attributes [BRAND] are required", type: "error" }, { code: "item.title.length", message: "Title is long", type: "warning" }] }, 400);
+      if (state.validateMode === "400warn") return json({ message: "seller.unable_to_list", error: "validation_error", status: 400, cause: [{ code: "shipping.lost_me1_by_user", message: "User has not mode me1", type: "warning" }, { code: "item.shipping.mandatory_free_shipping", message: "Mandatory free shipping added", type: "warning" }] }, 400);
       if (state.validateMode === "500") return json({ message: "internal error" }, 500);
       return new Response(null, { status: 204 });
     }

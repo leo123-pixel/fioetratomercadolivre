@@ -251,6 +251,28 @@ describe("validação e payload", () => {
     expect((await validateDraft(t.sql(), id))!.status).toBe("READY");
   });
 
+  it("recusa (400) só com avisos nas causas: mostra a mensagem principal como erro e não aprova", async () => {
+    await setup({ validateMode: "400warn" });
+    const productId = await seedProduct();
+    const { created } = await createDrafts(t.sql(), [productId]);
+    const id = created[0].draftId;
+    await updateDraft(t.sql(), id, {
+      familyName: "Oxidante 20 vol",
+      marketplaceCategoryId: CATEGORY,
+      marketplaceAttributes: [{ id: "BRAND", value_name: "L" }, { id: "NAME", value_name: "N" }, { id: "GTIN", value_name: "7896014106226" }],
+      listingTypeId: "gold_special",
+      listingPrice: "50",
+      listingQuantity: 1,
+    });
+    const r = (await validateDraft(t.sql(), id))!;
+    expect(r.remote).toBe("failed");
+    expect(r.status).toBe("INCOMPLETE");
+    const main = r.issues.find((i) => i.code === "ML_VALIDATION_ERROR")!;
+    expect(main.severity).toBe("error");
+    expect(main.message).toContain("seller.unable_to_list");
+    expect(r.issues.filter((i) => i.code.startsWith("ML_SHIPPING") || i.code.startsWith("ML_ITEM.SHIPPING")).every((i) => i.severity === "warning")).toBe(true);
+  });
+
   it("modelo User Products: envia family_name, sem title e sem variations; SELLER_SKU sempre presente", async () => {
     await setup();
     const draftId = await seedValidatedDraft();
