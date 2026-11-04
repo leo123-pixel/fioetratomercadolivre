@@ -37,7 +37,7 @@ export default async function MercadoLivreSettingsPage({
   const flash = error ? { kind: "error" as const, text: messageFor(error) } : status ? { kind: "success" as const, text: messageFor(status) } : null;
 
   return (
-    <>
+    <div className="narrow">
       <p className="breadcrumb">Configurações › Integrações</p>
       <h1>Mercado Livre</h1>
       {flash?.text && (
@@ -46,7 +46,7 @@ export default async function MercadoLivreSettingsPage({
         </div>
       )}
       <ConnectionPanel initial={summary} />
-    </>
+    </div>
   );
 }
 

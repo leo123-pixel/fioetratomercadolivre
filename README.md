@@ -1,7 +1,8 @@
 # Fio & Trato · Integrador ADS ↔ Mercado Livre
 
-Etapa atual: **autenticação OAuth 2.0 (Authorization Code + PKCE S256) com o Mercado Livre (MLB)**.
-Importação ADS, publicação de anúncios, pedidos, preço e estoque ainda **não** fazem parte do escopo.
+- **Fase 1 (concluída):** autenticação OAuth 2.0 (Authorization Code + PKCE S256) com o Mercado Livre (MLB).
+- **Fase 2 (esta versão):** catálogo da ADS: importação de produtos, tabelas comerciais, preços e estoque, imagens manuais e rascunhos de anúncio. Veja [Fase 2](#fase-2--catálogo-ads).
+- **Fora do escopo por enquanto:** publicação de anúncios, pedidos e sincronização automática com o Mercado Livre. Nenhuma tela publica nada.
 
 Stack: Next.js 15 (App Router) · TypeScript · Prisma + PostgreSQL · Vercel · Vitest.
 
@@ -89,3 +90,105 @@ URI de callback: **https://fioetrato-ml.vercel.app/api/auth/mercadolivre/callbac
 3. Faça login no Mercado Livre com a **conta administradora** do vendedor (operador/colaborador gera `invalid_operator_user_id`) e autorize.
 4. De volta ao painel: status **Conectado**, `user_id`, nickname e expiração do token.
 5. Clique **Testar conexão (/users/me)** para a chamada autenticada.
+
+---
+
+## Fase 2 — Catálogo ADS
+
+### Arquitetura
+
+```
+ADS API (somente GET)  ──►  AdsClient (x-api-key + User-Agent, timeout, espaçamento, classificação de erros)
+                              │
+                     Worker em fatias (lease global no Postgres, cursor por página, backoff)
+                              │  UPSERT em lote (jsonb_to_recordset + ON CONFLICT), 1 transação por página
+                              ▼
+PostgreSQL: products · price_tables · product_prices · product_stocks · ads_suppliers · ads_divisions
+            product_images · listing_drafts · import_jobs · import_job_errors · worker_leases · app_settings
+                              │
+Painel /produtos, /produtos/[id], /importacoes, /configuracoes/tabelas-de-preco      Supabase Storage (imagens)
+```
+
+**Fila sem Redis.** O projeto não tinha BullMQ/Redis, então a fila é persistente no próprio PostgreSQL (`import_jobs`):
+
+- `POST /api/import/*` cria a tarefa e responde 202. O processamento roda depois da resposta (`after()`), em fatias de cerca de 45 s. Cada fatia encadeia a próxima chamando `POST /api/import/worker`, autenticada por um token HMAC derivado de `SESSION_SECRET`.
+- Um **lease global** (`worker_leases`) garante uma única fatia consultando a ADS por vez. Um índice único parcial impede duas tarefas ativas do mesmo tipo.
+- Cada página é gravada **atomicamente junto com o cursor**. Se a função cair (timeout, deploy, restart), o lease expira e a próxima consulta do painel (`GET /api/import/jobs`) retoma do cursor salvo. Há também um Vercel Cron diário de segurança.
+- Falhas transitórias (timeout, rede, 429, 5xx, resposta inválida) usam backoff exponencial com até 5 tentativas por página e respeitam `Retry-After`. Depois disso a tarefa é interrompida preservando o que já foi gravado, e o botão **Retomar** continua da página salva. Credencial recusada e erro de configuração encerram sem retentativa.
+- Retentativas são idempotentes: UPSERT por chave natural (`ads_product_id`; `ads_product_id + branch_id + price_table_code`; `ads_product_id + branch_id`).
+
+### Decisões de modelagem
+
+| Decisão | Motivo |
+|---|---|
+| `products.ads_product_id` único | `produtoId` é o identificador de origem; `codFab` **não** é chave. |
+| `raw_payload` (JSONB) em produtos, tabelas, preços e estoque | Rastreabilidade do dado original. |
+| `name_custom`, imagens e rascunhos fora do UPSERT | Edições manuais nunca são sobrescritas pela importação. |
+| `DECIMAL` (14,4 em preços, 14,3 em quantidades) e números convertidos para string antes do SQL | Sem ponto flutuante em valores monetários. |
+| Ausência de linha em `product_stocks` = estoque **desconhecido** | Nunca vira zero. `ultVnd` é guardado como `last_sale_at`; `fetched_at` é o horário da consulta do integrador. |
+| Preço/estoque de produto ainda não importado vira erro `PRODUCT_NOT_IMPORTED` | Mantém a FK obrigatória para `products` e deixa o problema visível. |
+| Tabela de referência em `app_settings`, sem padrão | Não assumimos a tabela `G` (normal). Tabelas inativas não podem ser escolhidas. |
+| Preço de referência considera só preços **ativos** | Preços inativos não são sugeridos. `cTeto`, `pvs` e desconto são exibidos sem interpretação. |
+| Rascunho: `listing_price`/`listing_quantity` começam vazios | O operador define/confirma; `reference_price` é só um snapshot. |
+| Status `READY` exige título ≤ 60, preço, quantidade ≥ 1, imagem e produto ativo | Prepara a regra de publicação futura. |
+| Entidades complementares `ads_suppliers`/`ads_divisions` | Nomes nos filtros (sem dados de contato do fornecedor). |
+| `unchanged` em `import_jobs` e estado `CANCELED` | Distinguir atualização real de reconsulta; permitir cancelar. |
+| Texto + `CHECK` em vez de ENUM | Evolução sem `ALTER TYPE`; CHECKs e índices parciais estão na migration SQL. |
+
+Migration: `prisma/migrations/20261104120000_catalog_phase2/migration.sql`. Só cria tabelas, índices e constraints; não altera nem remove nada da fase 1.
+
+### Endpoints (todos exigem sessão de administrador; os que alteram dados exigem mesma origem)
+
+| Método | Rota | Função |
+|---|---|---|
+| GET | `/api/products` | Catálogo paginado no servidor: `q`, `supplierId`, `divisionId`, `stock=positive\|zero\|unknown`, `status`, `image`, `draft`, `price`, `sort`, `page`, `pageSize` |
+| GET / PATCH | `/api/products/:id` | Detalhe completo / editar `nameCustom` |
+| GET | `/api/products/:id/prices` · `/api/products/:id/stock` | Preços por tabela e filial / estoque por filial |
+| POST | `/api/products/:id/refresh` | Nova consulta à ADS só deste produto (`scopes`: product, prices, stock) |
+| GET / POST / PATCH | `/api/products/:id/images` | Listar / upload multipart (JPEG/PNG ≤ 4 MB, validação pelos bytes) / reordenar e definir principal |
+| DELETE | `/api/products/:id/images/:imageId` | Excluir (promove a próxima a principal) |
+| POST | `/api/import/products` · `/prices` · `/stocks` · `/price-tables` | Enfileira importação (`{ adsProductIds?: number[] }` para seleção) |
+| GET | `/api/import/jobs` · `/api/import/jobs/:id` | Histórico / detalhe com registros de erro |
+| POST | `/api/import/jobs/:id/retry` · `/cancel` | Retomar do cursor (ou reprocessar) / cancelar |
+| POST | `/api/import/worker` | Interno (token HMAC ou `CRON_SECRET`) |
+| GET | `/api/price-tables` | Tabelas comerciais, filiais e configuração |
+| GET / PATCH | `/api/settings/default-price-table` | Tabela (e filial) de referência |
+| GET / POST | `/api/listing-drafts` | Listar / criar (um produto ou lote; ignora inativos) |
+| GET / PATCH | `/api/listing-drafts/:id` | Ler (com verificação de prontidão) / salvar (`status=READY` validado) |
+
+Entradas validadas com Zod. As credenciais da ADS e do Supabase nunca chegam ao navegador nem aos logs.
+
+### Telas
+
+- `/produtos`: indicadores (total, estoque positivo, zerado e desconhecido, sem imagem, com rascunho), botões de importação com progresso ao vivo, pesquisa, filtros, seleção individual e em lote (criar rascunhos, atualizar preço ou estoque dos selecionados) e paginação.
+- `/produtos/[id]`: dados de origem com o JSON original, estoque por filial, preços de todas as tabelas, galeria de imagens (upload múltiplo, principal, reordenação, exclusão) e o rascunho do anúncio.
+- `/importacoes` e `/importacoes/[id]`: histórico, progresso, contadores, erros, retomar e cancelar.
+- `/configuracoes/tabelas-de-preco`: tabelas importadas e escolha da tabela/filial de referência.
+
+### Configuração (Vercel → Production)
+
+| Variável | Tipo | Observação |
+|---|---|---|
+| `ADS_API_KEY` | Sensitive | Cabeçalho `x-api-key` |
+| `ADS_CNPJ` | Plain | CNPJ da distribuidora na rota |
+| `ADS_USER_AGENT` | Plain | Mesmo `User-Agent` validado no Postman |
+| `ADS_API_BASE_URL` | Plain | Padrão: `https://hom.adsapi.com.br` |
+| `SUPABASE_URL` | Plain | `https://<ref>.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Sensitive | O bucket público `product-images` é criado no primeiro upload |
+| `CRON_SECRET` | Sensitive, opcional | Habilita o cron diário de retomada |
+
+Teste real de leitura na homologação (somente GET, imprime apenas contagens):
+
+```bash
+npm run ads:check
+```
+
+### Testes
+
+`npm test` roda 109 testes. Os testes de catálogo, importação e imagens usam **PGlite**, um PostgreSQL embarcado que executa as mesmas migrations de produção; assim UPSERT, ON CONFLICT, FKs, CHECKs e índices parciais são testados em Postgres real. A ADS, o Supabase Storage e o Mercado Livre são simulados.
+
+### Pendências e próxima etapa
+
+- Confirmar com a ADS: `ids` aparece como obrigatório no OpenAPI, mas a listagem completa foi validada sem ele no Postman; semântica de `cTeto`, `pvs`, `desconto` e do saldo de estoque; limite máximo de `pageSize`; política de rate limit.
+- Atualização incremental pelo parâmetro `alterado` da ADS, para reduzir as cerca de 260 requisições de uma carga completa (3.089 produtos + 10.077 preços em páginas de 50).
+- Próxima fase (publicação manual no Mercado Livre): preditor de categoria (`/sites/MLB/domain_discovery/search`), atributos obrigatórios por categoria (`/categories/{id}/attributes`), upload das imagens a partir da `public_url`, `POST /items` usando o `getValidAccessToken()` da fase 1, gravação do `item_id` no rascunho e sincronização de preço e estoque.

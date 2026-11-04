@@ -1,7 +1,7 @@
 import "server-only";
 
 /** Chaves cujo valor nunca deve aparecer em log. */
-const SENSITIVE_KEY = /(token|secret|password|verifier|authorization|cookie|^code$|^state$)/i;
+const SENSITIVE_KEY = /(token|secret|password|verifier|authorization|cookie|api[-_]?key|service[-_]?role|^apikey$|^code$|^state$)/i;
 
 /** Padrões de credenciais do Mercado Livre que podem vazar dentro de mensagens livres. */
 const REDACTED = "[REDACTED]";

@@ -13,6 +13,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="topbar">
           <span className="brand">Fio &amp; Trato</span>
           <span className="brand-sub">Integrador ADS ↔ Mercado Livre</span>
+          <nav className="nav" aria-label="Principal">
+            <a href="/produtos">Produtos</a>
+            <a href="/importacoes">Importações</a>
+            <a href="/configuracoes/tabelas-de-preco">Tabelas de preço</a>
+            <a href="/configuracoes/integracoes/mercadolivre">Mercado Livre</a>
+          </nav>
         </header>
         <main className="container">{children}</main>
       </body>

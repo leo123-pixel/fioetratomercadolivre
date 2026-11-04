@@ -15,16 +15,19 @@
     "db:migrate:dev": "prisma migrate dev",
     "admin:hash": "node scripts/hash-admin-password.mjs",
     "keys:generate": "node scripts/generate-secrets.mjs",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "ads:check": "node --env-file-if-exists=.env.local scripts/ads-smoke.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.16.2",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "@types/node": "^22.18.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",

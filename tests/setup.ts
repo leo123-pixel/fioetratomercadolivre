@@ -1,6 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, vi } from "vitest";
+import { resetAdsThrottleForTests } from "@/lib/ads/client";
 import { hashPassword } from "@/lib/auth/admin";
+import { setSchedulerForTesting } from "@/lib/imports/scheduler";
+import { ADS_BASE, ADS_CNPJ, ADS_KEY, ADS_UA } from "./helpers/ads-mock";
 import { resetEnvCacheForTests } from "@/lib/env";
 import { setStoreForTesting } from "@/lib/store";
 import { TEST_PASSWORD } from "./helpers/fixtures";
@@ -16,12 +19,25 @@ const TEST_ENV = {
   TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
   SESSION_SECRET: randomBytes(48).toString("base64url"),
   ADMIN_PASSWORD_HASH: await hashPassword(TEST_PASSWORD, 1024),
+  // ADS simulada (tests/helpers/ads-mock.ts) e Supabase Storage simulado.
+  ADS_API_BASE_URL: ADS_BASE,
+  ADS_API_KEY: ADS_KEY,
+  ADS_CNPJ: ADS_CNPJ,
+  ADS_USER_AGENT: ADS_UA,
+  ADS_PAGE_SIZE: "3",
+  ADS_MIN_INTERVAL_MS: "0",
+  ADS_RETRY_BASE_MS: "1",
+  SUPABASE_URL: "https://storage.test",
+  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-NAO-REAL",
+  SUPABASE_STORAGE_BUCKET: "product-images",
 };
 
 beforeEach(() => {
-  for (const key of Object.keys(process.env)) if (key.startsWith("MELI_")) delete process.env[key];
+  for (const key of Object.keys(process.env)) if (/^(MELI_|ADS_|SUPABASE_)/.test(key)) delete process.env[key];
   for (const [key, value] of Object.entries(TEST_ENV)) process.env[key] = value;
   resetEnvCacheForTests();
+  resetAdsThrottleForTests();
+  setSchedulerForTesting(() => {}); // o worker é acionado explicitamente nos testes
   setStoreForTesting(new MemoryStore());
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
