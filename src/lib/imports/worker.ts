@@ -85,7 +85,7 @@ function orphanErrors(rows: { ads_product_id: number }[], what: string): ItemErr
 }
 
 /** Busca na ADS (fora de transação) o próximo pedaço da tarefa e devolve como persisti-lo. */
-async function fetchStep(job: ImportJob, client: AdsClient): Promise<Fetched> {
+async function fetchStep(job: ImportJob, client: AdsClient, sql: Sql): Promise<Fetched> {
   const phases = PHASES[job.type];
   const phase = job.cursor.phase && phases.includes(job.cursor.phase) ? job.cursor.phase : phases[0];
 
@@ -140,10 +140,30 @@ async function fetchStep(job: ImportJob, client: AdsClient): Promise<Fetched> {
   const ids = job.params.adsProductIds;
   const chunk = job.cursor.chunk ?? 0;
   const pageNo = job.cursor.page ?? 1;
-  const chunkIds = ids?.length ? ids.slice(chunk * IDS_PER_REQUEST, (chunk + 1) * IDS_PER_REQUEST) : undefined;
+  const empty = (): Fetched => ({ processed: 0, page: null, next: null, persist: async () => ({ created: 0, updated: 0, unchanged: 0, failed: 0, errors: [] }) });
 
-  if (ids?.length && !chunkIds?.length) {
-    return { processed: 0, page: null, next: null, persist: async () => ({ created: 0, updated: 0, unchanged: 0, failed: 0, errors: [] }) };
+  // Estoque completo: /estoques exige `ids` (OpenAPI da ADS; sem filtro a listagem volta vazia),
+  // então percorremos o catálogo local em lotes de produtos. Produto sem saldo retornado continua "desconhecido".
+  const catalogMode = job.type === "STOCKS" && !ids?.length;
+  let chunkIds: number[] | undefined;
+  let moreChunks = false;
+  let catalogTotal: number | undefined;
+  if (catalogMode) {
+    const rows = await sql.query<{ id: number }>(
+      `SELECT ads_product_id AS id FROM products ORDER BY ads_product_id LIMIT $1::int OFFSET $2::int`,
+      [IDS_PER_REQUEST + 1, chunk * IDS_PER_REQUEST],
+    );
+    chunkIds = rows.slice(0, IDS_PER_REQUEST).map((r) => Number(r.id));
+    moreChunks = rows.length > IDS_PER_REQUEST;
+    if (chunk === 0 && pageNo === 1) {
+      const [{ n }] = await sql.query<{ n: number }>(`SELECT count(*)::int AS n FROM products`);
+      catalogTotal = n;
+    }
+    if (!chunkIds.length) return empty();
+  } else if (ids?.length) {
+    chunkIds = ids.slice(chunk * IDS_PER_REQUEST, (chunk + 1) * IDS_PER_REQUEST);
+    moreChunks = (chunk + 1) * IDS_PER_REQUEST < ids.length;
+    if (!chunkIds.length) return empty();
   }
 
   const res = await client.getPage(resource, { page: pageNo, ids: chunkIds });
@@ -153,11 +173,14 @@ async function fetchStep(job: ImportJob, client: AdsClient): Promise<Fetched> {
 
   let next: JobCursor | null;
   if (res.hasNext && res.items.length > 0 && !guardTripped) next = { phase, page: pageNo + 1, chunk };
-  else if (ids?.length && (chunk + 1) * IDS_PER_REQUEST < ids.length) next = { phase, page: 1, chunk: chunk + 1 };
+  else if (moreChunks) next = { phase, page: 1, chunk: chunk + 1 };
   else next = null;
 
-  // Total: no modo completo vem da ADS; no modo filtrado somamos os totais de cada lote.
-  const total = ids?.length ? undefined : res.total;
+  // Total: no modo completo vem da ADS; no estoque por catálogo é o nº de produtos consultados;
+  // no modo filtrado (seleção) não há total prévio.
+  const total = catalogMode ? catalogTotal : ids?.length ? undefined : res.total;
+  // No estoque por catálogo o progresso conta produtos consultados (não linhas por filial).
+  const processed = catalogMode ? (pageNo === 1 ? chunkIds!.length : 0) : res.items.length;
 
   const persist: Persist = async (tx) => {
     const extra: ItemError[] = guardTripped
@@ -181,7 +204,7 @@ async function fetchStep(job: ImportJob, client: AdsClient): Promise<Fetched> {
     return { ...c, failed: m.errors.length + orphans.length, errors: [...m.errors, ...orphanErrors(orphans, "Estoque"), ...extra] };
   };
 
-  return { processed: res.items.length, next, total, page: pageNo, persist };
+  return { processed, next, total, page: pageNo, persist };
 }
 
 function summarize(failedTotal: number, byCode: { code: string; n: number }[]): string | null {
@@ -366,7 +389,7 @@ export async function processJobs(opts: ProcessOptions = {}): Promise<ProcessRes
       try {
         client ??= getAdsClient(); // ConfigError aqui encerra a tarefa como FAILED (sem retentativa)
         retryBaseMs = client.retryBaseMs;
-        const fetched = await fetchStep(job, client);
+        const fetched = await fetchStep(job, client, sql);
         await commitStep(sql, job, owner, fetched);
         steps += 1;
       } catch (err) {

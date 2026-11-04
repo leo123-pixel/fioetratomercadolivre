@@ -168,6 +168,24 @@ describe("tabelas comerciais e preços", () => {
 });
 
 describe("estoque", () => {
+  it("importação completa consulta /estoques sempre com ids, em lotes do catálogo local", async () => {
+    const data = catalog(120);
+    data.stocks = data.products.filter((_, i) => i % 2 === 0).map((p) => stock(p.produtoId as number, 1));
+    const { calls } = mockAds(data);
+    await createJob(t.sql(), "PRODUCTS");
+    await runAll();
+    const job = await createJob(t.sql(), "STOCKS");
+    await runAll();
+    const stockCalls = calls.filter((c) => c.resource === "estoques");
+    expect(stockCalls.every((c) => c.ids.length > 0)).toBe(true);
+    // um lote por 50 produtos (cada lote pode ter várias páginas: ADS_PAGE_SIZE=3 nos testes)
+    expect(stockCalls.filter((c) => c.page === 1).map((c) => c.ids.length)).toEqual([50, 50, 20]);
+    expect(stockCalls[0].ids[0]).toBe(1000);
+    expect(await getJob(t.sql(), job.id)).toMatchObject({ status: "COMPLETED", total: 120, processed: 120, created: 60 });
+    // Os 60 sem saldo retornado continuam com estoque desconhecido (sem linha), nunca zero.
+    expect(await count("product_stocks")).toBe(60);
+  });
+
   it("estoque por filial: zero é zero, ausência é desconhecido; ultVnd não é data de atualização", async () => {
     const data = catalog(3);
     data.stocks = [stock(1000, 3), stock(1000, 2, { filialId: "02" }), stock(1001, 0)];

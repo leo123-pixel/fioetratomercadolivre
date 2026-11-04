@@ -157,7 +157,8 @@ export function mockAds(data: AdsData, failures: Failure[] = []) {
     };
     const all = source[resource];
     if (!all) return json({ title: "Not found" }, 404);
-    const filtered = ids.length ? all.filter((i) => ids.includes(i.produtoId as number)) : all;
+    // Comportamento observado na ADS: /estoques sem o filtro `ids` (obrigatório no OpenAPI) volta vazio.
+    const filtered = ids.length ? all.filter((i) => ids.includes(i.produtoId as number)) : resource === "estoques" ? [] : all;
     const p = page ?? 1;
     const size = pageSize ?? 50;
     const items = filtered.slice((p - 1) * size, p * size);

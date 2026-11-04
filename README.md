@@ -189,6 +189,7 @@ npm run ads:check
 
 ### Pendências e próxima etapa
 
-- Confirmar com a ADS: `ids` aparece como obrigatório no OpenAPI, mas a listagem completa foi validada sem ele no Postman; semântica de `cTeto`, `pvs`, `desconto` e do saldo de estoque; limite máximo de `pageSize`; política de rate limit.
+- `ids` é obrigatório no OpenAPI. Produtos e preços funcionam sem ele, mas `/estoques` sem `ids` volta vazio, então o estoque completo é consultado sempre em lotes de 50 ids do catálogo local (cerca de 62 requisições para 3.089 produtos).
+- Confirmar com a ADS: semântica de `cTeto`, `pvs`, `desconto` e do saldo de estoque; limite máximo de `pageSize`; política de rate limit.
 - Atualização incremental pelo parâmetro `alterado` da ADS, para reduzir as cerca de 260 requisições de uma carga completa (3.089 produtos + 10.077 preços em páginas de 50).
 - Próxima fase (publicação manual no Mercado Livre): preditor de categoria (`/sites/MLB/domain_discovery/search`), atributos obrigatórios por categoria (`/categories/{id}/attributes`), upload das imagens a partir da `public_url`, `POST /items` usando o `getValidAccessToken()` da fase 1, gravação do `item_id` no rascunho e sincronização de preço e estoque.
