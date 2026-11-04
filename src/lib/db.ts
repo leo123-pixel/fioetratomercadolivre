@@ -13,6 +13,8 @@ export function runtimeDatabaseUrl(raw: string | undefined): string | undefined 
   if (!raw) return raw;
   try {
     const url = new URL(raw);
+    // Pooler em modo transação (porta 6543): o Prisma precisa desligar prepared statements.
+    if (url.port === "6543" && !url.searchParams.has("pgbouncer")) url.searchParams.set("pgbouncer", "true");
     if (!url.searchParams.has("connection_limit")) url.searchParams.set("connection_limit", "2");
     if (!url.searchParams.has("pool_timeout")) url.searchParams.set("pool_timeout", "20");
     return url.toString();
