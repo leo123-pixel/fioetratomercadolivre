@@ -15,7 +15,8 @@ import { getCapabilities } from "@/lib/meli/capabilities";
 import { getCategory, getCategoryAttributes, type MeliAttribute } from "@/lib/meli/categories";
 import { buildItemPayload, fingerprint, loadContext } from "@/lib/publish/payload";
 import { getPublicationJob, listAttempts, requestPublication } from "@/lib/publish/service";
-import { checkAttributes, validateDraft } from "@/lib/publish/validate";
+import { checkAttributes, issuesFromMeli, validateDraft } from "@/lib/publish/validate";
+import { MeliHttpError } from "@/lib/meli/api";
 import { MAX_RECONCILE, processPublicationJobs } from "@/lib/publish/worker";
 import { setStorageForTesting, type ObjectStorage } from "@/lib/storage/supabase";
 import { BASE, makeRequest } from "./helpers/fixtures";
@@ -251,7 +252,14 @@ describe("validação e payload", () => {
     expect((await validateDraft(t.sql(), id))!.status).toBe("READY");
   });
 
-  it("recusa (400) só com avisos nas causas: mostra a mensagem principal como erro e não aprova", async () => {
+  it("recusa sem causas do tipo erro (403): a mensagem principal vira erro", () => {
+    const e = new MeliHttpError("forbidden", 403, "seller.unable_to_list (HTTP 403 em /items/validate)", "forbidden", [{ code: "x", message: "w", type: "warning" }]);
+    const issues = issuesFromMeli(e);
+    expect(issues[0].severity).toBe("error");
+    expect(issues[0].message).toContain("seller.unable_to_list");
+  });
+
+  it("400 do /items/validate só com avisos (frete): aprovado com avisos e publicável", async () => {
     await setup({ validateMode: "400warn" });
     const productId = await seedProduct();
     const { created } = await createDrafts(t.sql(), [productId]);
@@ -265,12 +273,11 @@ describe("validação e payload", () => {
       listingQuantity: 1,
     });
     const r = (await validateDraft(t.sql(), id))!;
-    expect(r.remote).toBe("failed");
-    expect(r.status).toBe("INCOMPLETE");
-    const main = r.issues.find((i) => i.code === "ML_VALIDATION_ERROR")!;
-    expect(main.severity).toBe("error");
-    expect(main.message).toContain("seller.unable_to_list");
-    expect(r.issues.filter((i) => i.code.startsWith("ML_SHIPPING") || i.code.startsWith("ML_ITEM.SHIPPING")).every((i) => i.severity === "warning")).toBe(true);
+    expect(r.remote).toBe("ok_warnings");
+    expect(r.status).toBe("VALIDATED");
+    expect(r.fingerprint).toBeTruthy();
+    expect(r.issues.some((i) => i.severity === "error")).toBe(false);
+    expect(r.issues.map((i) => i.code)).toEqual(expect.arrayContaining(["ML_SHIPPING.LOST_ME1_BY_USER", "ML_ITEM.SHIPPING.MANDATORY_FREE_SHIPPING"]));
   });
 
   it("modelo User Products: envia family_name, sem title e sem variations; SELLER_SKU sempre presente", async () => {

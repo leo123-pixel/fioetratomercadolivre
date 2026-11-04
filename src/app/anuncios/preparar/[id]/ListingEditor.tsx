@@ -584,7 +584,7 @@ export function ListingEditor(props: {
           <>
             <p className="muted">
               Última validação: {formatDateTime(draft.validationResult.checkedAt ?? null)} (versão {draft.validationResult.version}) · validação oficial:{" "}
-              {{ ok: "aprovada", failed: "recusada", unavailable: "indisponível", skipped: "não executada (há pendências internas)" }[draft.validationResult.remote ?? "skipped"] ??
+              {{ ok: "aprovada", ok_warnings: "aprovada com avisos", failed: "recusada", unavailable: "indisponível", skipped: "não executada (há pendências internas)" }[draft.validationResult.remote ?? "skipped"] ??
                 draft.validationResult.remote}
               {draft.validationResult.version !== draft.version && <strong> — desatualizada: o rascunho mudou depois.</strong>}
             </p>

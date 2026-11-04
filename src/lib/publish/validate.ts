@@ -40,7 +40,7 @@ export interface ValidationResult {
   version: number;
   model: PublicationModel | null;
   issues: ValidationIssue[];
-  remote: "ok" | "failed" | "unavailable" | "skipped";
+  remote: "ok" | "ok_warnings" | "failed" | "unavailable" | "skipped";
   fingerprint: string | null;
   checkedAt: string;
 }
@@ -272,7 +272,13 @@ export async function validateDraft(sql: Sql, draftId: number, opts: { remote?: 
       await meliRequest("/items/validate", { method: "POST", auth: true, body: buildItemPayload(ctx, { pictures: "source" }) });
       remote = "ok";
     } catch (e) {
-      if (e instanceof MeliHttpError && (e.kind === "bad_request" || e.kind === "forbidden" || e.kind === "auth")) {
+      if (e instanceof MeliHttpError && e.kind === "bad_request" && e.causes.length && e.causes.every((c) => c.type === "warning")) {
+        // O ML responde 400 "Validation error" mesmo quando a lista traz só avisos (ex.: frete ME1,
+        // frete grátis obrigatório). Avisos não impedem a criação: o item é considerado aprovado,
+        // com os avisos exibidos. Se o POST /items recusar (400), o job vira FAILED sem risco de duplicar.
+        remote = "ok_warnings";
+        issues.push(...e.causes.map((c) => warn(`ML_${(c.code ?? "cause").toUpperCase()}`, c.message ?? c.code ?? "Aviso do Mercado Livre", "mercadolivre")));
+      } else if (e instanceof MeliHttpError && (e.kind === "bad_request" || e.kind === "forbidden" || e.kind === "auth")) {
         remote = "failed";
         issues.push(...issuesFromMeli(e));
       } else {
@@ -283,7 +289,7 @@ export async function validateDraft(sql: Sql, draftId: number, opts: { remote?: 
     }
   }
 
-  const status: DraftStatus = hasErrors() ? "INCOMPLETE" : remote === "ok" ? "VALIDATED" : "READY";
+  const status: DraftStatus = hasErrors() ? "INCOMPLETE" : remote === "ok" || remote === "ok_warnings" ? "VALIDATED" : "READY";
   const fp = status === "VALIDATED" ? fingerprint(ctx) : null;
   const result: ValidationResult = { status, version, model, issues, remote, fingerprint: fp, checkedAt: new Date().toISOString() };
 
