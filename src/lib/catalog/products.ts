@@ -40,6 +40,7 @@ export interface ProductListItem {
   draftStatus: string | null;
   marketplaceItemId: string | null;
   permalink: string | null;
+  listingStatus: string | null;
 }
 
 export interface ProductListResult {
@@ -138,7 +139,7 @@ export async function listProducts(sql: Sql, filters: ProductFilters): Promise<P
             rp.price::text AS "referencePrice", rp.branch_id AS "referenceBranch",
             stk.total::text AS "stockTotal", stk.branches AS "stockBranches", stk.fetched_at AS "stockFetchedAt",
             d.id AS "draftId", d.status AS "draftStatus",
-            ml.marketplace_item_id AS "marketplaceItemId", ml.permalink
+            ml.marketplace_item_id AS "marketplaceItemId", ml.permalink, ml.status AS "listingStatus"
      ${BASE_FROM} ${clause}
      ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`,
     params,

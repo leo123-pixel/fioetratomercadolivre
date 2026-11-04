@@ -184,6 +184,15 @@ export function mockMeliApi(overrides: Partial<MeliState> = {}) {
       const item = state.items.get(sku);
       return json({ seller_id: search[1], results: item ? [item.id] : [], paging: { total: item ? 1 : 0 } });
     }
+    if (method === "GET" && path === "/items" && url.searchParams.get("ids")) {
+      const ids = url.searchParams.get("ids")!.split(",");
+      return json(
+        ids.map((id) => {
+          const item = [...state.items.values()].find((i) => i.id === id);
+          return item ? { code: 200, body: item } : { code: 404, body: { message: "Item not found", error: "not_found", status: 404 } };
+        }),
+      );
+    }
     const itemGet = path.match(/^\/items\/(MLB\d+)$/);
     if (method === "GET" && itemGet) {
       const item = [...state.items.values()].find((i) => i.id === itemGet[1]);

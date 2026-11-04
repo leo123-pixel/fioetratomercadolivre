@@ -257,7 +257,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
       <ListingCard
         productId={product.id}
         productInactive={product.inactive}
-        draft={draft ? { id: draft.id, status: draft.status, marketplaceItemId: draft.marketplaceItemId, permalink: draft.permalink } : null}
+        draft={draft ? { id: draft.id, status: draft.status, marketplaceItemId: draft.marketplaceItemId, permalink: draft.permalink, listingStatus: draft.listingStatus } : null}
       />
     </>
   );

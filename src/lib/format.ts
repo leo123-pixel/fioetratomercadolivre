@@ -78,3 +78,20 @@ export function stockLabel(total: string | null, branches: number): { text: stri
   const n = Number(total ?? "0");
   return n > 0 ? { text: formatNumber(total), tone: "ok" } : { text: `${formatNumber(total)} (sem estoque)`, tone: "warn" };
 }
+
+/** Status do anúncio no Mercado Livre (lido da API; "deleted" = excluído). */
+export const LISTING_STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "info" | "danger" | "" }> = {
+  active: { text: "Ativo no ML", tone: "ok" },
+  paused: { text: "Pausado no ML", tone: "warn" },
+  closed: { text: "Encerrado no ML", tone: "danger" },
+  deleted: { text: "Excluído no ML", tone: "danger" },
+  under_review: { text: "Em revisão no ML", tone: "warn" },
+  inactive: { text: "Inativo no ML", tone: "warn" },
+  payment_required: { text: "Pagamento pendente no ML", tone: "warn" },
+  not_yet_active: { text: "Ainda não ativo no ML", tone: "info" },
+};
+
+export function listingStatusLabel(status: string | null | undefined): { text: string; tone: "ok" | "warn" | "info" | "danger" | "" } {
+  if (!status) return { text: "Publicado", tone: "ok" };
+  return LISTING_STATUS_LABEL[status] ?? { text: `ML: ${status}`, tone: "" };
+}

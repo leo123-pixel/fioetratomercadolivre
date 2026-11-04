@@ -18,6 +18,8 @@ import { getPublicationJob, listAttempts, requestPublication } from "@/lib/publi
 import { checkAttributes, issuesFromMeli, validateDraft } from "@/lib/publish/validate";
 import { MeliHttpError } from "@/lib/meli/api";
 import { MAX_RECONCILE, processPublicationJobs } from "@/lib/publish/worker";
+import { syncAllListings } from "@/lib/publish/listings";
+import { parseItemNotification, processItemNotification } from "@/lib/publish/notifications";
 import { setStorageForTesting, type ObjectStorage } from "@/lib/storage/supabase";
 import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
@@ -557,5 +559,55 @@ describe("publicação em lote e autorização", () => {
     const res = await draftPatch(send(`/api/listing-drafts/${draftId}`, "PATCH", { listingPrice: "1,00" }), ctx({ id: String(draftId) }));
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("draft_locked");
+  });
+});
+
+describe("status do anúncio depois de publicado (somente leitura no ML)", () => {
+  async function published() {
+    const ml = await setup();
+    const draftId = await seedValidatedDraft();
+    await publish(draftId);
+    await runWorker();
+    const item = [...ml.state.items.values()].find((i) => i.id === "MLB1000")!;
+    return { ...ml, draftId, item };
+  }
+  const status = async () => (await t.sql().query<{ status: string }>(`SELECT status FROM marketplace_listings`))[0].status;
+
+  it("sincronização em lote lê pausado e excluído; nada é enviado ao ML além de leituras", async () => {
+    const { state, item, draftId } = await published();
+    item.status = "paused";
+    expect(await syncAllListings(t.sql())).toEqual({ checked: 1, changed: 1 });
+    expect(await status()).toBe("paused");
+    item.status = "closed";
+    item.sub_status = ["deleted"];
+    await syncAllListings(t.sql());
+    expect(await status()).toBe("deleted");
+    const events = await t.sql().query<{ to: string }>(
+      `SELECT new_status AS "to" FROM marketplace_listing_events WHERE listing_draft_id = $1 AND event_type = 'listing_status_changed' ORDER BY id`,
+      [draftId],
+    );
+    expect(events.map((e) => e.to)).toEqual(["paused", "deleted"]);
+    const writesAfterPublish = state.calls.filter((c) => c.method !== "GET" && !["/items", "/items/validate", "/pictures/items/upload", "/items/MLB1000/description"].includes(c.path));
+    expect(writesAfterPublish.filter((c) => c.path.startsWith("/items/MLB1000") && c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("item que some do ML (404) fica como excluído", async () => {
+    const { state } = await published();
+    state.items.clear();
+    await syncAllListings(t.sql());
+    expect(await status()).toBe("deleted");
+  });
+
+  it("notificação só aciona releitura para item desta conta e desta aplicação; corpo não é confiado", async () => {
+    const { item } = await published();
+    item.status = "closed";
+    expect(parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "orders_v2", application_id: 1234567890 })).toBeNull();
+    expect(parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 999 })).toBeNull();
+    expect(parseItemNotification({ resource: "/../items/MLB1000", user_id: 42, topic: "items" })).toBeNull();
+    expect(await processItemNotification(t.sql(), { itemId: "MLB1000", userId: "999" })).toBeNull();
+    expect(await status()).toBe("active");
+    const n = parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 1234567890 })!;
+    expect(await processItemNotification(t.sql(), n)).toBe("closed");
+    expect(await status()).toBe("closed");
   });
 });

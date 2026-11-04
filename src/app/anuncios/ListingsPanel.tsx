@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, PUBLICATION_JOB_LABEL } from "@/lib/format";
+import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
 
 interface Row {
   id: number;
@@ -85,6 +85,20 @@ export function ListingsPanel(props: {
       else next.add(id);
       return next;
     });
+  }
+
+  /** Relê no ML o status de todos os anúncios publicados (somente leitura). */
+  async function syncStatuses() {
+    setBusy("sync");
+    setFeedback(null);
+    try {
+      const r = await api<{ checked: number; changed: number }>("/api/marketplace/listings/sync", { body: {} });
+      if (!r.ok) return setFeedback({ kind: "error", text: errorText(r) });
+      setFeedback({ kind: "success", text: `${r.data.checked} anúncio(s) consultado(s) no Mercado Livre; ${r.data.changed} com status alterado.` });
+      router.refresh();
+    } finally {
+      setBusy(null);
+    }
   }
 
   /** Valida os selecionados um a um (cada validação consulta o Mercado Livre). */
@@ -200,6 +214,15 @@ export function ListingsPanel(props: {
         </section>
       )}
 
+      {props.account.connected && (
+        <div className="toolbar">
+          <button className="btn btn-secondary btn-sm" type="button" disabled={busy !== null} onClick={syncStatuses}>
+            {busy === "sync" ? "Consultando o Mercado Livre…" : "Atualizar status no Mercado Livre"}
+          </button>
+          <span className="muted">Lê no ML se cada anúncio publicado está ativo, pausado, encerrado ou excluído. Não altera nada no ML.</span>
+        </div>
+      )}
+
       {feedback && (
         <div className={`alert ${feedback.kind}`} role="status">
           {feedback.text}
@@ -291,7 +314,11 @@ export function ListingsPanel(props: {
                     <td className="num">{r.listingQuantity ?? "—"}</td>
                     <td>
                       <span className={`chip ${s.tone}`}>{s.text}</span>
-                      {r.listingStatus && <span className="chip" style={{ marginLeft: 4 }}>{r.listingStatus}</span>}
+                      {r.listingStatus && (
+                        <span className={`chip ${listingStatusLabel(r.listingStatus).tone}`} style={{ marginLeft: 4 }}>
+                          {listingStatusLabel(r.listingStatus).text}
+                        </span>
+                      )}
                     </td>
                     <td>{formatDateTime(r.updatedAt)}</td>
                     <td>

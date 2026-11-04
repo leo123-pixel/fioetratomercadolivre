@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { DRAFT_STATUS_LABEL, formatMoney, stockLabel } from "@/lib/format";
+import { DRAFT_STATUS_LABEL, formatMoney, listingStatusLabel, stockLabel } from "@/lib/format";
 
 export interface ProductRowView {
   id: number;
@@ -27,6 +27,7 @@ export interface ProductRowView {
   draftStatus: string | null;
   marketplaceItemId: string | null;
   permalink: string | null;
+  listingStatus: string | null;
 }
 
 type Feedback = { kind: "success" | "error" | "warn"; text: string } | null;
@@ -241,11 +242,13 @@ export function ProductTable({
                       {p.inactive ? <span className="chip danger">Inativo</span> : <span className="chip ok">Ativo</span>}
                       {p.marketplaceItemId ? (
                         p.permalink ? (
-                          <a className="chip ok" href={p.permalink} target="_blank" rel="noopener noreferrer">
-                            Publicado {p.marketplaceItemId}
+                          <a className={`chip ${listingStatusLabel(p.listingStatus).tone}`} href={p.permalink} target="_blank" rel="noopener noreferrer">
+                            {listingStatusLabel(p.listingStatus).text} · {p.marketplaceItemId}
                           </a>
                         ) : (
-                          <span className="chip ok">Publicado {p.marketplaceItemId}</span>
+                          <span className={`chip ${listingStatusLabel(p.listingStatus).tone}`}>
+                            {listingStatusLabel(p.listingStatus).text} · {p.marketplaceItemId}
+                          </span>
                         )
                       ) : (
                         draft && <span className={`chip ${draft.tone}`}>{draft.text}</span>

@@ -1,5 +1,6 @@
 import "server-only";
-import { meliRequest } from "../meli/api";
+import { MeliHttpError, meliRequest } from "../meli/api";
+import { recordEvent } from "./events";
 import type { Sql } from "../sql";
 
 export interface MarketplaceListing {
@@ -46,19 +47,95 @@ export async function getListing(sql: Sql, id: number): Promise<MarketplaceListi
   return row ?? null;
 }
 
+interface MeliItemSnapshot {
+  id?: string;
+  status?: string;
+  sub_status?: string[];
+  permalink?: string;
+  user_product_id?: string;
+  family_id?: string | number;
+}
+
+export const ITEM_ID_RE = /^MLB\d{1,15}$/;
+
+/**
+ * Status guardado localmente. Segue o do ML (active, paused, closed, under_review, inactive...),
+ * com "deleted" quando o anúncio foi excluído (closed + sub_status deleted, ou 404).
+ */
+export function localStatus(item: MeliItemSnapshot | null): string | null {
+  if (!item) return "deleted";
+  if (item.sub_status?.includes("deleted")) return "deleted";
+  return typeof item.status === "string" ? item.status.slice(0, 40) : null;
+}
+
+async function applySnapshot(sql: Sql, itemId: string, item: MeliItemSnapshot | null): Promise<string | null> {
+  const status = localStatus(item);
+  const previous = await sql.query<{ id: number; status: string; listingDraftId: number }>(
+    `SELECT id, status, listing_draft_id AS "listingDraftId" FROM marketplace_listings WHERE marketplace_item_id = $1::text`,
+    [itemId],
+  );
+  if (!previous.length) return null;
+  await sql.execute(
+    `UPDATE marketplace_listings SET status = COALESCE($2::text, status), permalink = COALESCE($3::text, permalink),
+       user_product_id = COALESCE($4::text, user_product_id), family_id = COALESCE($5::text, family_id),
+       last_synced_at = now(), updated_at = now() WHERE marketplace_item_id = $1::text`,
+    [itemId, status, item?.permalink ?? null, item?.user_product_id ?? null, item?.family_id == null ? null : String(item.family_id)],
+  );
+  for (const row of previous) {
+    if (status && row.status !== status) {
+      await recordEvent(sql, { draftId: row.listingDraftId, listingId: row.id, type: "listing_status_changed", from: row.status, to: status, details: { itemId } });
+    }
+  }
+  return status;
+}
+
+/** Relê um anúncio pelo ID do ML (somente leitura; não altera preço nem estoque no ML). */
+export async function syncItem(sql: Sql, itemId: string): Promise<string | null> {
+  if (!ITEM_ID_RE.test(itemId)) return null;
+  try {
+    const { data } = await meliRequest<MeliItemSnapshot>(`/items/${itemId}`, { auth: true });
+    return applySnapshot(sql, itemId, data);
+  } catch (e) {
+    if (e instanceof MeliHttpError && e.kind === "not_found") return applySnapshot(sql, itemId, null);
+    throw e;
+  }
+}
+
 /** Atualiza status/permalink lendo GET /items/{id} (somente leitura; não altera preço nem estoque no ML). */
 export async function syncListing(sql: Sql, id: number): Promise<MarketplaceListing | null> {
   const listing = await getListing(sql, id);
   if (!listing) return null;
-  const { data } = await meliRequest<{ status?: string; permalink?: string; price?: number; available_quantity?: number; user_product_id?: string; family_id?: string | number }>(
-    `/items/${listing.marketplaceItemId}`,
-    { auth: true },
-  );
-  await sql.execute(
-    `UPDATE marketplace_listings SET status = COALESCE($2::text, status), permalink = COALESCE($3::text, permalink),
-       user_product_id = COALESCE($4::text, user_product_id), family_id = COALESCE($5::text, family_id),
-       last_synced_at = now(), updated_at = now() WHERE id = $1::int`,
-    [id, data.status ?? null, data.permalink ?? null, data.user_product_id ?? null, data.family_id == null ? null : String(data.family_id)],
-  );
+  await syncItem(sql, listing.marketplaceItemId);
   return getListing(sql, id);
+}
+
+/** Relê todos os anúncios em lotes de 20 (GET /items?ids=, multiget oficial). Somente leitura. */
+export async function syncAllListings(sql: Sql): Promise<{ checked: number; changed: number }> {
+  const rows = await sql.query<{ itemId: string; status: string }>(
+    `SELECT marketplace_item_id AS "itemId", status FROM marketplace_listings ORDER BY id`,
+  );
+  const before = new Map(rows.map((r) => [r.itemId, r.status]));
+  const ids = [...before.keys()].filter((id) => ITEM_ID_RE.test(id));
+  let changed = 0;
+  for (let i = 0; i < ids.length; i += 20) {
+    const chunk = ids.slice(i, i + 20);
+    const { data } = await meliRequest<{ code: number; body: MeliItemSnapshot }[]>("/items", {
+      auth: true,
+      query: { ids: chunk.join(","), attributes: "id,status,sub_status,permalink,user_product_id,family_id" },
+    });
+    for (const entry of Array.isArray(data) ? data : []) {
+      const itemId = entry.body?.id;
+      if (entry.code === 200 && itemId) {
+        const s = await applySnapshot(sql, itemId, entry.body);
+        if (s && s !== before.get(itemId)) changed++;
+      }
+    }
+    // Itens que o multiget não devolveu com 200 (ex.: 404 excluído) são relidos um a um.
+    const ok = new Set((Array.isArray(data) ? data : []).filter((e) => e.code === 200 && e.body?.id).map((e) => e.body.id!));
+    for (const id of chunk.filter((id) => !ok.has(id))) {
+      const s = await syncItem(sql, id);
+      if (s && s !== before.get(id)) changed++;
+    }
+  }
+  return { checked: ids.length, changed };
 }
