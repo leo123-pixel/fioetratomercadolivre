@@ -47,6 +47,11 @@ export const POST = adminHandler(
     if (!files.length) return errorJson(400, "no_files", "Nenhum arquivo enviado no campo file");
     if (files.length > MAX_FILES_PER_REQUEST) return errorJson(400, "too_many_files", `Máximo de ${MAX_FILES_PER_REQUEST} arquivos por envio`);
 
+    const replaceRaw = form.get("replaceImageId");
+    const replaceImageId = typeof replaceRaw === "string" && /^\d{1,9}$/.test(replaceRaw) ? Number(replaceRaw) : undefined;
+    if (replaceRaw !== null && !replaceImageId) return errorJson(400, "invalid_replace", "replaceImageId inválido");
+    if (replaceImageId && files.length !== 1) return errorJson(400, "invalid_replace", "Envie exatamente um arquivo para substituir uma imagem");
+
     const sql = getSql();
     const uploaded: ProductImage[] = [];
     const rejected: { filename: string; code: string; message: string }[] = [];
@@ -56,7 +61,7 @@ export const POST = adminHandler(
         continue;
       }
       try {
-        uploaded.push(await addImage(sql, id, { bytes: new Uint8Array(await file.arrayBuffer()), filename: file.name }));
+        uploaded.push(await addImage(sql, id, { bytes: new Uint8Array(await file.arrayBuffer()), filename: file.name, replaceImageId }));
       } catch (err) {
         if (err instanceof ImageValidationError) {
           if (err.code === "product_not_found") return errorJson(404, "not_found", err.message);

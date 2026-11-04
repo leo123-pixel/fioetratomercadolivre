@@ -42,12 +42,23 @@ async function triggerNextSlice(): Promise<void> {
   }
 }
 
+/** Uma fatia processa as duas filas em paralelo (importação ADS e publicação ML), cada uma com seu lease. */
 export async function runSliceAndChain(): Promise<void> {
   try {
-    const result = await processJobs({ budgetMs: SLICE_BUDGET_MS });
-    if (result.more) await triggerNextSlice();
+    const { processPublicationJobs } = await import("../publish/worker");
+    const [imports, publish] = await Promise.all([
+      processJobs({ budgetMs: SLICE_BUDGET_MS }).catch((err) => {
+        logger.error("Erro no worker de importação", { err });
+        return { more: false };
+      }),
+      processPublicationJobs({ budgetMs: SLICE_BUDGET_MS }).catch((err) => {
+        logger.error("Erro no worker de publicação", { err });
+        return { more: false };
+      }),
+    ]);
+    if (imports.more || publish.more) await triggerNextSlice();
   } catch (err) {
-    logger.error("Erro no worker de importação", { err });
+    logger.error("Erro no worker", { err });
   }
 }
 

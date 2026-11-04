@@ -3,6 +3,8 @@ import { afterEach, beforeEach, vi } from "vitest";
 import { resetAdsThrottleForTests } from "@/lib/ads/client";
 import { hashPassword } from "@/lib/auth/admin";
 import { setSchedulerForTesting } from "@/lib/imports/scheduler";
+import { setMeliThrottleForTests } from "@/lib/meli/api";
+import { resetRateLimitsForTests } from "@/lib/rate-limit";
 import { ADS_BASE, ADS_CNPJ, ADS_KEY, ADS_UA } from "./helpers/ads-mock";
 import { resetEnvCacheForTests } from "@/lib/env";
 import { setStoreForTesting } from "@/lib/store";
@@ -37,6 +39,8 @@ beforeEach(() => {
   for (const [key, value] of Object.entries(TEST_ENV)) process.env[key] = value;
   resetEnvCacheForTests();
   resetAdsThrottleForTests();
+  setMeliThrottleForTests(0);
+  resetRateLimitsForTests();
   setSchedulerForTesting(() => {}); // o worker é acionado explicitamente nos testes
   setStoreForTesting(new MemoryStore());
   vi.spyOn(console, "info").mockImplementation(() => {});

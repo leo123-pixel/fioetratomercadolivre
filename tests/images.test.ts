@@ -166,6 +166,24 @@ describe("upload e gestão de imagens", () => {
     ]);
   });
 
+  it("substitui uma imagem mantendo posição e principal, e remove o arquivo antigo", async () => {
+    const storage = new FakeStorage();
+    setStorageForTesting(storage);
+    const id = await seedProduct();
+    const first = (await upload(id, [{ bytes: png(), name: "a.png" }])).body.uploaded[0];
+    await upload(id, [{ bytes: png(), name: "b.png" }]);
+    const form = new FormData();
+    form.append("file", new Blob([Buffer.from(jpeg(900, 900))], { type: "image/jpeg" }), "nova.jpg");
+    form.append("replaceImageId", String(first.id));
+    const h = new Headers({ origin: BASE, cookie: Object.entries(adminCookies()).map(([k, v]) => `${k}=${v}`).join("; ") });
+    const res = await uploadRoute(new NextRequest(new URL(`/api/products/${id}/images`, BASE), { method: "POST", body: form, headers: h }), ctx({ id: String(id) }));
+    expect(res.status).toBe(201);
+    const replaced = (await res.json()).uploaded[0];
+    expect(replaced).toMatchObject({ isPrimary: true, position: first.position, contentType: "image/jpeg", width: 900 });
+    expect(storage.objects.has(first.storagePath)).toBe(false);
+    expect(await t.sql().query(`SELECT 1 FROM product_images`)).toHaveLength(2);
+  });
+
   it("imagens continuam vinculadas após reimportação e rascunho pronto volta a rascunho sem imagens", async () => {
     setStorageForTesting(new FakeStorage());
     const id = await seedProduct();

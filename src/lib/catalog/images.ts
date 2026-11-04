@@ -20,12 +20,14 @@ export interface ProductImage {
   originalFilename: string | null;
   position: number;
   isPrimary: boolean;
+  /** ID da imagem no Mercado Livre após POST /pictures/items/upload. */
+  mlPictureId: string | null;
   createdAt: Date;
 }
 
 const IMAGE_COLUMNS = `id, product_id AS "productId", storage_path AS "storagePath", public_url AS "publicUrl",
   content_type AS "contentType", size_bytes AS "sizeBytes", width, height, original_filename AS "originalFilename",
-  position, is_primary AS "isPrimary", created_at AS "createdAt"`;
+  position, is_primary AS "isPrimary", created_at AS "createdAt", ml_picture_id AS "mlPictureId"`;
 
 export class ImageValidationError extends Error {
   constructor(
@@ -110,11 +112,14 @@ export async function listImages(sql: Sql, productId: number): Promise<ProductIm
 export interface UploadInput {
   bytes: Uint8Array;
   filename?: string;
+  /** Substitui esta imagem (mantém posição e marcação de principal). */
+  replaceImageId?: number;
 }
 
 /**
  * Valida, envia ao storage e registra. O registro só é criado após o upload; se a gravação no banco
- * falhar, o objeto enviado é removido (compensação).
+ * falhar, o objeto enviado é removido (compensação). Na substituição, o arquivo antigo é removido
+ * do storage somente depois que o banco confirmar a troca.
  */
 export async function addImage(sql: Sql, productId: number, input: UploadInput, storage: ObjectStorage = getStorage()): Promise<ProductImage> {
   const detected = validateImage(input.bytes);
@@ -125,35 +130,55 @@ export async function addImage(sql: Sql, productId: number, input: UploadInput, 
     [productId],
   );
   if (!product) throw new ImageValidationError("product_not_found", "Produto não encontrado.");
-  if (product.images >= MAX_IMAGES_PER_PRODUCT) {
+  if (!input.replaceImageId && product.images >= MAX_IMAGES_PER_PRODUCT) {
     throw new ImageValidationError("too_many_images", `Limite de ${MAX_IMAGES_PER_PRODUCT} imagens por produto.`);
   }
 
   const path = `products/${product.adsProductId}/${randomUUID()}.${detected.ext}`;
   await storage.upload(path, input.bytes, detected.contentType);
 
+  let replacedPath: string | null = null;
   try {
-    return await sql.transaction(async (tx) => {
+    const row = await sql.transaction(async (tx) => {
       // Serializa inclusões concorrentes do mesmo produto (posição e imagem principal).
       await tx.query(`SELECT id FROM products WHERE id = $1::int FOR UPDATE`, [productId]);
-      const [{ count, next }] = await tx.query<{ count: number; next: number }>(
-        `SELECT count(*)::int AS count, COALESCE(max(position) + 1, 0)::int AS next FROM product_images WHERE product_id = $1::int`,
-        [productId],
-      );
-      if (count >= MAX_IMAGES_PER_PRODUCT) {
-        throw new ImageValidationError("too_many_images", `Limite de ${MAX_IMAGES_PER_PRODUCT} imagens por produto.`);
+      let position: number;
+      let primary: boolean | null = null;
+      if (input.replaceImageId) {
+        const [old] = await tx.query<{ storagePath: string; position: number; isPrimary: boolean }>(
+          `DELETE FROM product_images WHERE id = $1::int AND product_id = $2::int
+           RETURNING storage_path AS "storagePath", position, is_primary AS "isPrimary"`,
+          [input.replaceImageId, productId],
+        );
+        if (!old) throw new ImageValidationError("image_not_found", "Imagem a substituir não encontrada neste produto.");
+        replacedPath = old.storagePath;
+        position = old.position;
+        primary = old.isPrimary;
+      } else {
+        const [{ count, next }] = await tx.query<{ count: number; next: number }>(
+          `SELECT count(*)::int AS count, COALESCE(max(position) + 1, 0)::int AS next FROM product_images WHERE product_id = $1::int`,
+          [productId],
+        );
+        if (count >= MAX_IMAGES_PER_PRODUCT) {
+          throw new ImageValidationError("too_many_images", `Limite de ${MAX_IMAGES_PER_PRODUCT} imagens por produto.`);
+        }
+        position = next;
       }
-      const [row] = await tx.query<ProductImage>(
+      const [inserted] = await tx.query<ProductImage>(
         `INSERT INTO product_images (product_id, storage_path, public_url, content_type, size_bytes, width, height,
            original_filename, position, is_primary)
          VALUES ($1::int, $2::text, $3::text, $4::text, $5::int, $6::int, $7::int, $8::text, $9::int,
-           NOT EXISTS (SELECT 1 FROM product_images WHERE product_id = $1::int AND is_primary))
+           COALESCE($10::boolean, NOT EXISTS (SELECT 1 FROM product_images WHERE product_id = $1::int AND is_primary)))
          RETURNING ${IMAGE_COLUMNS}`,
         [productId, path, storage.publicUrl(path), detected.contentType, input.bytes.length, detected.width, detected.height,
-          safeFilename(input.filename), next],
+          safeFilename(input.filename), position, primary],
       );
-      return row;
+      return inserted;
     });
+    if (replacedPath) {
+      await storage.remove(replacedPath).catch((e) => logger.warn("Imagem substituída, mas o arquivo antigo não foi removido", { path: replacedPath, err: e }));
+    }
+    return row;
   } catch (err) {
     await storage.remove(path).catch((e) => logger.warn("Falha ao remover objeto após erro de gravação", { path, err: e }));
     throw err;

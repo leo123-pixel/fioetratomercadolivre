@@ -21,7 +21,7 @@ export async function api<T = Record<string, unknown>>(url: string, init: { meth
   return { ok: res.ok, status: res.status, data };
 }
 
-export function errorText(r: ApiResult): string {
+export function errorText<T>(r: ApiResult<T>): string {
   const d = r.data;
   const parts = [d.message ?? `Erro ${r.status}`];
   if (d.detail) parts.push(d.detail);

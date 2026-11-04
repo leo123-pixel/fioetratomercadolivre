@@ -11,7 +11,7 @@ export interface ProductFilters {
   stock?: StockFilter;
   status?: "active" | "inactive";
   image?: "with" | "without";
-  draft?: "none" | "any" | "DRAFT" | "READY";
+  draft?: "none" | "any" | "DRAFT" | "READY" | "published" | "unpublished";
   price?: "with" | "without";
   sort?: "name" | "ads_id" | "updated" | "stock";
   page?: number;
@@ -38,6 +38,8 @@ export interface ProductListItem {
   stockFetchedAt: Date | null;
   draftId: number | null;
   draftStatus: string | null;
+  marketplaceItemId: string | null;
+  permalink: string | null;
 }
 
 export interface ProductListResult {
@@ -74,7 +76,8 @@ const BASE_FROM = `
     SELECT sum(st.quantity) AS total, count(*)::int AS branches, max(st.fetched_at) AS fetched_at
     FROM product_stocks st WHERE st.product_id = p.id
   ) stk ON true
-  LEFT JOIN listing_drafts d ON d.product_id = p.id`;
+  LEFT JOIN listing_drafts d ON d.product_id = p.id
+  LEFT JOIN marketplace_listings ml ON ml.product_id = p.id`;
 
 export async function listProducts(sql: Sql, filters: ProductFilters): Promise<ProductListResult> {
   const settings = await getCatalogSettings(sql);
@@ -105,6 +108,8 @@ export async function listProducts(sql: Sql, filters: ProductFilters): Promise<P
   if (filters.draft === "none") where.push(`d.id IS NULL`);
   if (filters.draft === "any") where.push(`d.id IS NOT NULL`);
   if (filters.draft === "DRAFT" || filters.draft === "READY") where.push(`d.status = ${add(filters.draft)}::text`);
+  if (filters.draft === "published") where.push(`ml.id IS NOT NULL`);
+  if (filters.draft === "unpublished") where.push(`ml.id IS NULL`);
   if (filters.price === "with") where.push(`rp.price IS NOT NULL`);
   if (filters.price === "without") where.push(`rp.price IS NULL`);
 
@@ -132,7 +137,8 @@ export async function listProducts(sql: Sql, filters: ProductFilters): Promise<P
             img.public_url AS "primaryImageUrl", COALESCE(img.n, 0) AS "imageCount",
             rp.price::text AS "referencePrice", rp.branch_id AS "referenceBranch",
             stk.total::text AS "stockTotal", stk.branches AS "stockBranches", stk.fetched_at AS "stockFetchedAt",
-            d.id AS "draftId", d.status AS "draftStatus"
+            d.id AS "draftId", d.status AS "draftStatus",
+            ml.marketplace_item_id AS "marketplaceItemId", ml.permalink
      ${BASE_FROM} ${clause}
      ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`,
     params,

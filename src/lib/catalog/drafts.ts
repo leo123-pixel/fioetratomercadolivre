@@ -1,21 +1,32 @@
 import "server-only";
+import { recordEvent } from "../publish/events";
 import type { Sql } from "../sql";
 import { findActivePrice } from "./products";
 import { getCatalogSettings } from "./settings";
 
 /**
- * Rascunhos de anúncio. Preparação manual apenas — nada aqui chama a API do Mercado Livre.
+ * Rascunhos de anúncio. Salvar um rascunho NUNCA publica: a publicação é um comando separado,
+ * confirmado pelo administrador e amarrado a uma versão validada (src/lib/publish).
  *
- * - O título nasce do nome do produto; preço e quantidade de anúncio ficam vazios até o operador
- *   confirmar (nenhum desconto/margem é aplicado automaticamente).
- * - reference_price é um snapshot do preço ATIVO da tabela/filial escolhidas, recalculado a cada gravação.
- * - Produtos inativos não recebem rascunho automaticamente.
+ * - Preço e quantidade de anúncio começam vazios (o operador define; nada é aplicado automaticamente).
+ * - reference_price é um snapshot do preço ATIVO da tabela/filial escolhidas.
+ * - Cada alteração incrementa `version` e invalida a validação anterior.
  */
-export type DraftStatus = "DRAFT" | "READY" | "ARCHIVED";
+export const DRAFT_STATUSES = ["DRAFT", "INCOMPLETE", "READY", "VALIDATING", "VALIDATED", "PUBLISHING", "PUBLISHED", "FAILED", "UNKNOWN", "ARCHIVED"] as const;
+export type DraftStatus = (typeof DRAFT_STATUSES)[number];
+/** Estados em que o conteúdo não pode mudar (publicação em curso, concluída ou incerta). */
+export const LOCKED_STATUSES: DraftStatus[] = ["VALIDATING", "PUBLISHING", "PUBLISHED", "UNKNOWN"];
 
-/** Limite de título do Mercado Livre (MLB). */
+/** Limite padrão de título (MLB); a categoria pode definir outro em settings.max_title_length. */
 export const ML_TITLE_MAX = 60;
-export const MAX_ATTRIBUTES = 100;
+export const MAX_ATTRIBUTES = 150;
+
+export interface DraftAttributeValue {
+  id: string;
+  value_id?: string | null;
+  value_name?: string | null;
+  values?: { id?: string | null; name?: string | null }[];
+}
 
 export interface ListingDraft {
   id: number;
@@ -24,6 +35,7 @@ export interface ListingDraft {
   productName: string;
   productInactive: boolean;
   title: string | null;
+  familyName: string | null;
   description: string | null;
   selectedPriceTable: string | null;
   selectedBranchId: string | null;
@@ -31,27 +43,52 @@ export interface ListingDraft {
   listingPrice: string | null;
   listingQuantity: number | null;
   marketplaceCategoryId: string | null;
-  marketplaceAttributes: unknown;
+  categoryName: string | null;
+  marketplaceAttributes: DraftAttributeValue[];
+  listingTypeId: string | null;
+  itemCondition: string | null;
+  saleTerms: DraftAttributeValue[];
+  catalogProductId: string | null;
+  catalogListing: boolean;
   status: DraftStatus;
+  version: number;
+  validatedVersion: number | null;
+  validatedFingerprint: string | null;
+  validatedAt: Date | null;
+  validationResult: unknown;
+  lastError: string | null;
   imageCount: number;
   stockTotal: string | null;
   stockBranches: number;
+  marketplaceItemId: string | null;
+  permalink: string | null;
+  listingStatus: string | null;
+  primaryImageUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-const DRAFT_SELECT = `
+export const DRAFT_SELECT = `
   SELECT d.id, d.product_id AS "productId", p.ads_product_id AS "adsProductId",
          COALESCE(p.name_custom, p.name_original) AS "productName", p.inactive AS "productInactive",
-         d.title, d.description, d.selected_price_table AS "selectedPriceTable", d.selected_branch_id AS "selectedBranchId",
-         d.reference_price::text AS "referencePrice", d.listing_price::text AS "listingPrice",
-         d.listing_quantity AS "listingQuantity", d.marketplace_category_id AS "marketplaceCategoryId",
-         d.marketplace_attributes AS "marketplaceAttributes", d.status,
+         d.title, d.family_name AS "familyName", d.description, d.selected_price_table AS "selectedPriceTable",
+         d.selected_branch_id AS "selectedBranchId", d.reference_price::text AS "referencePrice",
+         d.listing_price::text AS "listingPrice", d.listing_quantity AS "listingQuantity",
+         d.marketplace_category_id AS "marketplaceCategoryId", d.category_name AS "categoryName",
+         d.marketplace_attributes AS "marketplaceAttributes", d.listing_type_id AS "listingTypeId",
+         d.item_condition AS "itemCondition", d.sale_terms AS "saleTerms", d.catalog_product_id AS "catalogProductId",
+         d.catalog_listing AS "catalogListing", d.status, d.version, d.validated_version AS "validatedVersion",
+         d.validated_fingerprint AS "validatedFingerprint", d.validated_at AS "validatedAt",
+         d.validation_result AS "validationResult", d.last_error AS "lastError",
          (SELECT count(*)::int FROM product_images i WHERE i.product_id = d.product_id) AS "imageCount",
          (SELECT sum(quantity)::text FROM product_stocks st WHERE st.product_id = d.product_id) AS "stockTotal",
          (SELECT count(*)::int FROM product_stocks st WHERE st.product_id = d.product_id) AS "stockBranches",
+         ml.marketplace_item_id AS "marketplaceItemId", ml.permalink, ml.status AS "listingStatus",
+         (SELECT public_url FROM product_images i WHERE i.product_id = d.product_id ORDER BY i.is_primary DESC, i.position LIMIT 1) AS "primaryImageUrl",
          d.created_at AS "createdAt", d.updated_at AS "updatedAt"
-  FROM listing_drafts d JOIN products p ON p.id = d.product_id`;
+  FROM listing_drafts d
+  JOIN products p ON p.id = d.product_id
+  LEFT JOIN marketplace_listings ml ON ml.listing_draft_id = d.id`;
 
 export async function getDraft(sql: Sql, id: number): Promise<ListingDraft | null> {
   const rows = await sql.query<ListingDraft>(`${DRAFT_SELECT} WHERE d.id = $1::int`, [id]);
@@ -63,27 +100,49 @@ export async function getDraftByProduct(sql: Sql, productId: number): Promise<Li
   return rows[0] ?? null;
 }
 
-export async function listDrafts(sql: Sql, opts: { status?: DraftStatus; page?: number; pageSize?: number } = {}) {
+/** Filtros do painel de anúncios (abas). */
+export const DRAFT_TABS: Record<string, DraftStatus[]> = {
+  rascunhos: ["DRAFT"],
+  incompletos: ["INCOMPLETE"],
+  prontos: ["READY", "VALIDATED"],
+  publicando: ["VALIDATING", "PUBLISHING"],
+  publicados: ["PUBLISHED"],
+  erros: ["FAILED"],
+  desconhecidos: ["UNKNOWN"],
+  arquivados: ["ARCHIVED"],
+};
+
+export async function listDrafts(sql: Sql, opts: { status?: DraftStatus; statuses?: DraftStatus[]; q?: string; page?: number; pageSize?: number } = {}) {
   const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
   const page = Math.max(opts.page ?? 1, 1);
   const params: unknown[] = [];
-  let clause = "";
-  if (opts.status) {
-    params.push(opts.status);
-    clause = `WHERE d.status = $1::text`;
+  const where: string[] = [];
+  const statuses = opts.statuses ?? (opts.status ? [opts.status] : null);
+  if (statuses?.length) {
+    params.push(statuses);
+    where.push(`d.status = ANY($${params.length}::text[])`);
   }
-  const [{ total }] = await sql.query<{ total: number }>(`SELECT count(*)::int AS total FROM listing_drafts d ${clause}`, params);
+  if (opts.q?.trim()) {
+    params.push(`%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+    where.push(`(COALESCE(p.name_custom, p.name_original) ILIKE $${params.length} OR d.title ILIKE $${params.length} OR p.ads_product_id::text = trim(both '%' from $${params.length}))`);
+  }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const [{ total }] = await sql.query<{ total: number }>(
+    `SELECT count(*)::int AS total FROM listing_drafts d JOIN products p ON p.id = d.product_id ${clause}`,
+    params,
+  );
   params.push(pageSize, (page - 1) * pageSize);
   const items = await sql.query<ListingDraft>(
     `${DRAFT_SELECT} ${clause} ORDER BY d.updated_at DESC, d.id LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  return { items, total, page, pageSize };
+  const counts = await sql.query<{ status: string; n: number }>(`SELECT status, count(*)::int AS n FROM listing_drafts GROUP BY status`);
+  return { items, total, page, pageSize, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
 }
 
 export interface CreateDraftsResult {
   created: { productId: number; draftId: number }[];
-  skipped: { productId: number; reason: "not_found" | "inactive" | "already_exists"; draftId?: number }[];
+  skipped: { productId: number; reason: "not_found" | "inactive" | "already_exists" | "already_published"; draftId?: number }[];
 }
 
 export async function createDrafts(sql: Sql, productIds: number[]): Promise<CreateDraftsResult> {
@@ -92,25 +151,29 @@ export async function createDrafts(sql: Sql, productIds: number[]): Promise<Crea
 
   for (const productId of [...new Set(productIds)]) {
     await sql.transaction(async (tx) => {
-      const [product] = await tx.query<{ id: number; inactive: boolean; name: string }>(
-        `SELECT id, inactive, COALESCE(name_custom, name_original) AS name FROM products WHERE id = $1::int`,
+      const [product] = await tx.query<{ id: number; inactive: boolean; name: string; published: boolean }>(
+        `SELECT p.id, p.inactive, COALESCE(p.name_custom, p.name_original) AS name,
+                EXISTS (SELECT 1 FROM marketplace_listings ml WHERE ml.product_id = p.id) AS published
+         FROM products p WHERE p.id = $1::int`,
         [productId],
       );
       if (!product) return void result.skipped.push({ productId, reason: "not_found" });
       if (product.inactive) return void result.skipped.push({ productId, reason: "inactive" });
 
       const ref = await findActivePrice(tx, productId, settings.defaultPriceTable, settings.defaultBranchId);
+      const name = product.name ? product.name.slice(0, 120) : null;
       const inserted = await tx.query<{ id: number }>(
-        `INSERT INTO listing_drafts (product_id, title, selected_price_table, selected_branch_id, reference_price, status, updated_at)
-         VALUES ($1::int, $2::text, $3::text, $4::text, $5::numeric, 'DRAFT', now())
+        `INSERT INTO listing_drafts (product_id, title, family_name, selected_price_table, selected_branch_id, reference_price, status, updated_at)
+         VALUES ($1::int, $2::text, $2::text, $3::text, $4::text, $5::numeric, 'DRAFT', now())
          ON CONFLICT (product_id) DO NOTHING RETURNING id`,
-        [productId, product.name ? product.name.slice(0, 120) : null, settings.defaultPriceTable, ref?.branchId ?? settings.defaultBranchId, ref?.price ?? null],
+        [productId, name, settings.defaultPriceTable, ref?.branchId ?? settings.defaultBranchId, ref?.price ?? null],
       );
       if (inserted[0]) {
         result.created.push({ productId, draftId: inserted[0].id });
+        await recordEvent(tx, { draftId: inserted[0].id, type: "draft_created", to: "DRAFT" });
       } else {
         const [existing] = await tx.query<{ id: number }>(`SELECT id FROM listing_drafts WHERE product_id = $1::int`, [productId]);
-        result.skipped.push({ productId, reason: "already_exists", draftId: existing?.id });
+        result.skipped.push({ productId, reason: product.published ? "already_published" : "already_exists", draftId: existing?.id });
       }
     });
   }
@@ -119,6 +182,7 @@ export async function createDrafts(sql: Sql, productIds: number[]): Promise<Crea
 
 export interface DraftPatch {
   title?: string | null;
+  familyName?: string | null;
   description?: string | null;
   selectedPriceTable?: string | null;
   selectedBranchId?: string | null;
@@ -126,8 +190,15 @@ export interface DraftPatch {
   listingPrice?: string | null;
   listingQuantity?: number | null;
   marketplaceCategoryId?: string | null;
-  marketplaceAttributes?: unknown[];
-  status?: DraftStatus;
+  categoryName?: string | null;
+  marketplaceAttributes?: DraftAttributeValue[];
+  listingTypeId?: string | null;
+  itemCondition?: string | null;
+  saleTerms?: DraftAttributeValue[];
+  catalogProductId?: string | null;
+  catalogListing?: boolean;
+  /** Somente DRAFT, READY ou ARCHIVED podem ser definidos manualmente. */
+  status?: "DRAFT" | "READY" | "ARCHIVED";
 }
 
 export interface Readiness {
@@ -135,7 +206,7 @@ export interface Readiness {
   warnings: { code: string; message: string }[];
 }
 
-/** Requisitos mínimos para marcar o rascunho como pronto para a futura publicação. */
+/** Requisitos internos mínimos (fase 2). A validação completa da fase 3 está em src/lib/publish/validate.ts. */
 export function checkReadiness(d: ListingDraft): Readiness {
   const blocking: Readiness["blocking"] = [];
   const warnings: Readiness["warnings"] = [];
@@ -147,7 +218,7 @@ export function checkReadiness(d: ListingDraft): Readiness {
   if (d.imageCount < 1) blocking.push({ code: "NO_IMAGES", message: "Adicione ao menos uma imagem." });
   if (d.productInactive) blocking.push({ code: "PRODUCT_INACTIVE", message: "O produto está inativo na ADS." });
 
-  if (!d.marketplaceCategoryId) warnings.push({ code: "CATEGORY_MISSING", message: "Categoria do Mercado Livre ainda não definida (necessária na fase de publicação)." });
+  if (!d.marketplaceCategoryId) warnings.push({ code: "CATEGORY_MISSING", message: "Categoria do Mercado Livre ainda não definida." });
   if (d.stockBranches === 0) warnings.push({ code: "STOCK_UNKNOWN", message: "Estoque desconhecido: atualize o estoque antes de publicar." });
   else if (d.listingQuantity !== null && d.stockTotal !== null && d.listingQuantity > Number(d.stockTotal)) {
     warnings.push({ code: "QUANTITY_ABOVE_STOCK", message: `Quantidade (${d.listingQuantity}) maior que o estoque consultado (${d.stockTotal}).` });
@@ -162,10 +233,41 @@ export class DraftNotReadyError extends Error {
   }
 }
 
+export class DraftLockedError extends Error {
+  constructor(readonly status: DraftStatus) {
+    super(
+      status === "PUBLISHED"
+        ? "Rascunho já publicado: alterações no anúncio publicado não são feitas por aqui."
+        : `Rascunho bloqueado durante a operação em andamento (${status}).`,
+    );
+  }
+}
+
+const CONTENT_FIELDS: [keyof DraftPatch, string, string][] = [
+  ["title", "title", "text"],
+  ["familyName", "family_name", "text"],
+  ["description", "description", "text"],
+  ["selectedPriceTable", "selected_price_table", "text"],
+  ["selectedBranchId", "selected_branch_id", "text"],
+  ["listingPrice", "listing_price", "numeric"],
+  ["listingQuantity", "listing_quantity", "int"],
+  ["marketplaceCategoryId", "marketplace_category_id", "text"],
+  ["categoryName", "category_name", "text"],
+  ["marketplaceAttributes", "marketplace_attributes", "jsonb"],
+  ["listingTypeId", "listing_type_id", "text"],
+  ["itemCondition", "item_condition", "text"],
+  ["saleTerms", "sale_terms", "jsonb"],
+  ["catalogProductId", "catalog_product_id", "text"],
+  ["catalogListing", "catalog_listing", "boolean"],
+];
+
 export async function updateDraft(sql: Sql, id: number, patch: DraftPatch): Promise<ListingDraft | null> {
   return sql.transaction(async (tx) => {
-    const current = await getDraft(tx, id);
-    if (!current) return null;
+    // FOR UPDATE: serializa com o comando de publicação, que também trava o rascunho.
+    const [locked] = await tx.query<{ status: DraftStatus }>(`SELECT status FROM listing_drafts WHERE id = $1::int FOR UPDATE`, [id]);
+    if (!locked) return null;
+    if (LOCKED_STATUSES.includes(locked.status)) throw new DraftLockedError(locked.status);
+    const current = (await getDraft(tx, id))!;
 
     const table = patch.selectedPriceTable !== undefined ? patch.selectedPriceTable : current.selectedPriceTable;
     const branch = patch.selectedBranchId !== undefined ? patch.selectedBranchId : current.selectedBranchId;
@@ -177,16 +279,24 @@ export async function updateDraft(sql: Sql, id: number, patch: DraftPatch): Prom
       params.push(value);
       sets.push(`${column} = $${params.length}::${cast}`);
     };
-    if (patch.title !== undefined) set("title", patch.title?.trim() || null, "text");
-    if (patch.description !== undefined) set("description", patch.description?.trim() || null, "text");
-    if (patch.selectedPriceTable !== undefined) set("selected_price_table", patch.selectedPriceTable, "text");
-    if (patch.selectedBranchId !== undefined) set("selected_branch_id", patch.selectedBranchId, "text");
-    if (patch.listingPrice !== undefined) set("listing_price", patch.listingPrice, "numeric");
-    if (patch.listingQuantity !== undefined) set("listing_quantity", patch.listingQuantity, "int");
-    if (patch.marketplaceCategoryId !== undefined) set("marketplace_category_id", patch.marketplaceCategoryId?.trim() || null, "text");
-    if (patch.marketplaceAttributes !== undefined) set("marketplace_attributes", JSON.stringify(patch.marketplaceAttributes), "jsonb");
-    if (patch.status !== undefined) set("status", patch.status, "text");
+    let contentChanged = false;
+    for (const [key, column, cast] of CONTENT_FIELDS) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      contentChanged = true;
+      if (cast === "jsonb") set(column, JSON.stringify(value), cast);
+      else if (typeof value === "string") set(column, value.trim() || null, cast);
+      else set(column, value, cast);
+    }
     set("reference_price", ref?.price ?? null, "numeric");
+
+    // Qualquer mudança de conteúdo gera nova versão e invalida a validação anterior.
+    let nextStatus: DraftStatus | undefined = patch.status;
+    if (contentChanged) {
+      sets.push("version = version + 1");
+      if (!nextStatus && ["VALIDATED", "READY", "INCOMPLETE", "FAILED"].includes(current.status)) nextStatus = "DRAFT";
+    }
+    if (nextStatus) set("status", nextStatus, "text");
     sets.push("updated_at = now()");
 
     await tx.execute(`UPDATE listing_drafts SET ${sets.join(", ")} WHERE id = $1::int`, params);
@@ -195,6 +305,9 @@ export async function updateDraft(sql: Sql, id: number, patch: DraftPatch): Prom
     if (updated.status === "READY") {
       const readiness = checkReadiness(updated);
       if (readiness.blocking.length) throw new DraftNotReadyError(readiness); // desfaz a transação
+    }
+    if (nextStatus && nextStatus !== current.status) {
+      await recordEvent(tx, { draftId: id, type: "status_changed", from: current.status, to: nextStatus, details: { version: updated.version } });
     }
     return updated;
   });

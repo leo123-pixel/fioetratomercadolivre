@@ -45,6 +45,8 @@ export default async function ProdutosPage({ searchParams }: { searchParams: Pro
     stockFetchedAt: p.stockFetchedAt ? new Date(p.stockFetchedAt).toISOString() : null,
   }));
   const pages = Math.max(1, Math.ceil(list.total / list.pageSize));
+  const filterParams: Record<string, string> = {};
+  for (const [k, v] of Object.entries(query)) if (v !== undefined && !["page", "pageSize"].includes(k)) filterParams[k] = String(v);
   const filtered = Object.keys(raw).some((k) => !["page", "pageSize", "sort"].includes(k) && raw[k]);
 
   return (
@@ -152,6 +154,8 @@ export default async function ProdutosPage({ searchParams }: { searchParams: Pro
             <option value="any">Com rascunho</option>
             <option value="DRAFT">Em edição</option>
             <option value="READY">Pronto p/ publicar</option>
+            <option value="published">Publicados no ML</option>
+            <option value="unpublished">Não publicados</option>
           </select>
         </div>
         <div className="field">
@@ -203,7 +207,7 @@ export default async function ProdutosPage({ searchParams }: { searchParams: Pro
             ) : null}
             {kpis.lastProductImportAt ? ` · última alteração de cadastro: ${formatDateTime(kpis.lastProductImportAt)}` : ""}
           </p>
-          <ProductTable rows={rows} referenceTable={list.settings.defaultPriceTable} />
+          <ProductTable rows={rows} referenceTable={list.settings.defaultPriceTable} total={list.total} filter={filterParams} />
           <nav className="pagination" aria-label="Paginação">
             <span className="muted">
               Página {list.page} de {pages}

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { requireAdminPage } from "@/lib/auth/page-guard";
-import { checkReadiness, getDraftByProduct } from "@/lib/catalog/drafts";
+import { getDraftByProduct } from "@/lib/catalog/drafts";
 import { listImages, RECOMMENDED_MIN_SIDE } from "@/lib/catalog/images";
 import { getProduct, getProductPrices, getProductStocks, stockStatus } from "@/lib/catalog/products";
 import { getCatalogSettings, listPriceTables } from "@/lib/catalog/settings";
@@ -9,7 +9,7 @@ import { formatDate, formatDateTime, formatMoney, formatNumber, formatPercent } 
 import { logger } from "@/lib/logger";
 import { getSql } from "@/lib/sql";
 import { PageProblem } from "../../PageProblem";
-import { DraftEditor, type DraftView } from "./DraftEditor";
+import { ListingCard } from "./ListingCard";
 import { ImageManager, type ImageView } from "./ImageManager";
 import { NameEditor, RefreshButtons } from "./ProductActions";
 
@@ -58,30 +58,6 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
     originalFilename: i.originalFilename,
     sizeBytes: i.sizeBytes,
   }));
-
-  const draftView: DraftView | null = draft
-    ? {
-        id: draft.id,
-        title: draft.title,
-        description: draft.description,
-        selectedPriceTable: draft.selectedPriceTable,
-        selectedBranchId: draft.selectedBranchId,
-        referencePrice: draft.referencePrice,
-        listingPrice: draft.listingPrice,
-        listingQuantity: draft.listingQuantity,
-        marketplaceCategoryId: draft.marketplaceCategoryId,
-        marketplaceAttributes: Array.isArray(draft.marketplaceAttributes) ? (draft.marketplaceAttributes as DraftView["marketplaceAttributes"]) : [],
-        status: draft.status,
-        updatedAt: new Date(draft.updatedAt).toISOString(),
-        readiness: checkReadiness(draft),
-      }
-    : null;
-
-  const priceOptions = [...new Set(prices.filter((p) => !p.inactive && p.price !== null).map((p) => `${p.priceTableCode}|${p.branchId}`))].map((key) => {
-    const [code, branch] = key.split("|");
-    const p = prices.find((x) => x.priceTableCode === code && x.branchId === branch)!;
-    return { code, branch, price: p.price!, description: p.priceTableDescription };
-  });
 
   return (
     <>
@@ -278,16 +254,10 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
 
       <ImageManager productId={product.id} initial={imageViews} recommendedMinSide={RECOMMENDED_MIN_SIDE} />
 
-      <DraftEditor
-        key={draftView ? `draft-${draftView.id}` : "no-draft"}
+      <ListingCard
         productId={product.id}
         productInactive={product.inactive}
-        suggestedTitle={product.nameCustom ?? product.nameOriginal}
-        initial={draftView}
-        priceOptions={priceOptions}
-        defaultTable={settings.defaultPriceTable}
-        tables={tables.map((t) => ({ code: t.code, description: t.description, inactive: t.inactive }))}
-        stockTotal={stocks.length ? String(stockTotal) : null}
+        draft={draft ? { id: draft.id, status: draft.status, marketplaceItemId: draft.marketplaceItemId, permalink: draft.permalink } : null}
       />
     </>
   );

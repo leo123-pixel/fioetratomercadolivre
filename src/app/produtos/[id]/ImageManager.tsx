@@ -12,12 +12,13 @@ export interface ImageView {
   isPrimary: boolean;
   originalFilename: string | null;
   sizeBytes: number;
+  mlPictureId?: string | null;
 }
 
 const ACCEPT = "image/jpeg,image/png";
 const MAX_BYTES = 4 * 1024 * 1024;
 
-export function ImageManager({ productId, initial, recommendedMinSide }: { productId: number; initial: ImageView[]; recommendedMinSide: number }) {
+export function ImageManager({ productId, initial, recommendedMinSide, locked = false }: { productId: number; initial: ImageView[]; recommendedMinSide: number; locked?: boolean }) {
   const router = useRouter();
   const [images, setImages] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -27,7 +28,7 @@ export function ImageManager({ productId, initial, recommendedMinSide }: { produ
 
   async function upload(files: FileList | File[]) {
     const list = [...files];
-    if (!list.length) return;
+    if (!list.length || locked) return;
     setBusy(true);
     const out: typeof messages = [];
     try {
@@ -54,6 +55,24 @@ export function ImageManager({ productId, initial, recommendedMinSide }: { produ
       setMessages(out);
       setBusy(false);
       if (input.current) input.current.value = "";
+      router.refresh();
+    }
+  }
+
+  async function replace(image: ImageView, file: File) {
+    if (file.size > MAX_BYTES) return setMessages([{ kind: "error", text: `${file.name}: acima de 4 MB.` }]);
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("replaceImageId", String(image.id));
+      const r = await api<{ uploaded: ImageView[]; rejected: { message: string }[] }>(`/api/products/${productId}/images`, { form });
+      if (r.ok && r.data.uploaded[0]) {
+        setImages((prev) => prev.map((i) => (i.id === image.id ? r.data.uploaded[0] : i)));
+        setMessages([{ kind: "success", text: `${file.name}: imagem substituída.` }]);
+      } else setMessages([{ kind: "error", text: r.data.rejected?.[0]?.message ?? errorText(r) }]);
+    } finally {
+      setBusy(false);
       router.refresh();
     }
   }
@@ -97,7 +116,7 @@ export function ImageManager({ productId, initial, recommendedMinSide }: { produ
     <section className="card" aria-labelledby="imagens">
       <div className="status-row">
         <h2 id="imagens">Imagens ({images.length})</h2>
-        <span className="muted">JPEG ou PNG, até 4 MB, recomendado ≥ {recommendedMinSide}px</span>
+        <span className="muted">JPEG ou PNG, até 4 MB, recomendado ≥ {recommendedMinSide}px{locked ? " · bloqueado durante a publicação" : ""}</span>
       </div>
       <div
         className={`dropzone${drag ? " active" : ""}`}
@@ -115,7 +134,7 @@ export function ImageManager({ productId, initial, recommendedMinSide }: { produ
         <p style={{ margin: "0 0 8px" }}>Arraste imagens aqui ou</p>
         <label className="btn btn-primary" style={{ display: "inline-flex", marginBottom: 0 }}>
           {busy ? "Enviando…" : "Selecionar arquivos"}
-          <input ref={input} type="file" accept={ACCEPT} multiple hidden disabled={busy} onChange={(e) => e.target.files && void upload(e.target.files)} />
+          <input ref={input} type="file" accept={ACCEPT} multiple hidden disabled={busy || locked} onChange={(e) => e.target.files && void upload(e.target.files)} />
         </label>
       </div>
       {messages.map((m, i) => (
@@ -137,19 +156,24 @@ export function ImageManager({ productId, initial, recommendedMinSide }: { produ
                 {img.isPrimary ? (
                   <span className="chip info">Principal</span>
                 ) : (
-                  <button className="btn btn-secondary btn-sm" type="button" disabled={busy} onClick={() => arrange({ primaryId: img.id })}>
+                  <button className="btn btn-secondary btn-sm" type="button" disabled={busy || locked} onClick={() => arrange({ primaryId: img.id })}>
                     Tornar principal
                   </button>
                 )}
-                <button className="btn btn-secondary btn-sm" type="button" disabled={busy || idx === 0} onClick={() => move(idx, -1)} aria-label="Mover para a esquerda">
+                <button className="btn btn-secondary btn-sm" type="button" disabled={busy || locked || idx === 0} onClick={() => move(idx, -1)} aria-label="Mover para a esquerda">
                   ←
                 </button>
-                <button className="btn btn-secondary btn-sm" type="button" disabled={busy || idx === images.length - 1} onClick={() => move(idx, 1)} aria-label="Mover para a direita">
+                <button className="btn btn-secondary btn-sm" type="button" disabled={busy || locked || idx === images.length - 1} onClick={() => move(idx, 1)} aria-label="Mover para a direita">
                   →
                 </button>
-                <button className="btn btn-danger btn-sm" type="button" disabled={busy} onClick={() => remove(img)}>
+                <label className="btn btn-secondary btn-sm" style={{ marginBottom: 0, opacity: busy || locked ? 0.6 : 1 }}>
+                  Substituir
+                  <input type="file" accept={ACCEPT} hidden disabled={busy || locked} onChange={(e) => e.target.files?.[0] && void replace(img, e.target.files[0])} />
+                </label>
+                <button className="btn btn-danger btn-sm" type="button" disabled={busy || locked} onClick={() => remove(img)}>
                   Excluir
                 </button>
+                {img.mlPictureId && <span className="chip ok">enviada ao ML</span>}
                 {img.width && img.height ? (
                   <span className={Math.min(img.width, img.height) < recommendedMinSide ? "hint warn" : "hint"} style={{ width: "100%" }}>
                     {img.width}×{img.height}px

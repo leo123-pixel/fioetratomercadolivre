@@ -125,8 +125,9 @@ model Product {
 
   prices ProductPrice[]
   stocks ProductStock[]
-  images ProductImage[]
-  draft  ListingDraft?
+  images   ProductImage[]
+  draft    ListingDraft?
+  listings MarketplaceListing[]
 
   @@index([supplierId])
   @@index([divisionId])
@@ -217,6 +218,9 @@ model ProductImage {
   position         Int      @default(0)
   isPrimary        Boolean  @default(false) @map("is_primary")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// ID retornado por POST /pictures/items/upload (evita reenviar a mesma imagem).
+  mlPictureId      String?   @map("ml_picture_id")
+  mlPictureAt      DateTime? @map("ml_picture_at") @db.Timestamptz(3)
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -239,15 +243,156 @@ model ListingDraft {
   listingQuantity       Int?     @map("listing_quantity")
   marketplaceCategoryId String?  @map("marketplace_category_id")
   marketplaceAttributes Json     @default("[]") @map("marketplace_attributes")
-  /// DRAFT | READY | ARCHIVED (CHECK na migration)
+  /// DRAFT | INCOMPLETE | READY | VALIDATING | VALIDATED | PUBLISHING | PUBLISHED | FAILED | UNKNOWN | ARCHIVED
   status                String   @default("DRAFT")
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // --- Fase 3: preparação e publicação ---
+  /// Incrementada a cada alteração; a publicação exige a versão validada.
+  version               Int       @default(1)
+  categoryName          String?   @map("category_name")
+  /// Nome de família (modelo User Products). No modelo clássico usa-se `title`.
+  familyName            String?   @map("family_name")
+  listingTypeId         String?   @map("listing_type_id")
+  itemCondition         String?   @default("new") @map("item_condition")
+  /// Termos de venda (ex.: WARRANTY_TYPE / WARRANTY_TIME).
+  saleTerms             Json      @default("[]") @map("sale_terms")
+  /// Produto de catálogo escolhido pelo operador (nunca vinculado automaticamente).
+  catalogProductId      String?   @map("catalog_product_id")
+  catalogListing        Boolean   @default(false) @map("catalog_listing")
+  validatedVersion      Int?      @map("validated_version")
+  validatedFingerprint  String?   @map("validated_fingerprint")
+  validatedAt           DateTime? @map("validated_at") @db.Timestamptz(3)
+  validationResult      Json?     @map("validation_result")
+  lastError             String?   @map("last_error")
+
+  product  Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  listing  MarketplaceListing?
+  jobs     PublicationJob[]
+  events   ListingEvent[]
 
   @@index([status])
   @@map("listing_drafts")
+}
+
+/// Anúncio criado no Mercado Livre (somente após resposta confirmada da API ou conciliação).
+model MarketplaceListing {
+  id                   Int       @id @default(autoincrement())
+  productId            Int       @map("product_id")
+  adsProductId         Int       @map("ads_product_id")
+  listingDraftId       Int       @unique @map("listing_draft_id")
+  marketplaceAccountId String    @map("marketplace_account_id")
+  marketplaceItemId    String    @unique @map("marketplace_item_id")
+  userProductId        String?   @map("user_product_id")
+  familyId             String?   @map("family_id")
+  categoryId           String    @map("category_id")
+  listingType          String?   @map("listing_type")
+  price                Decimal   @db.Decimal(14, 2)
+  quantity             Int
+  /// Situação informada pelo Mercado Livre (active, paused, under_review...).
+  status               String
+  permalink            String?
+  descriptionStatus    String?   @map("description_status")
+  publishedAt          DateTime  @default(now()) @map("published_at") @db.Timestamptz(3)
+  lastSyncedAt         DateTime? @map("last_synced_at") @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  product Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  draft   ListingDraft @relation(fields: [listingDraftId], references: [id], onDelete: Restrict)
+  events  ListingEvent[]
+
+  @@unique([productId, marketplaceAccountId])
+  @@index([adsProductId])
+  @@map("marketplace_listings")
+}
+
+/// Pedido de publicação confirmado pelo administrador. Idempotente por `idempotencyKey`.
+model PublicationJob {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  listingDraftId  Int       @map("listing_draft_id")
+  productId       Int       @map("product_id")
+  accountId       String    @map("account_id")
+  batchId         String?   @map("batch_id") @db.Uuid
+  /// QUEUED | RUNNING | SUCCEEDED | FAILED | UNKNOWN | CANCELED
+  status          String    @default("QUEUED")
+  requestedBy     String    @map("requested_by")
+  draftVersion    Int       @map("draft_version")
+  fingerprint     String
+  idempotencyKey  String    @unique @map("idempotency_key")
+  attemptCount    Int       @default(0) @map("attempt_count")
+  reconcileCount  Int       @default(0) @map("reconcile_count")
+  /// Momento em que o POST /items foi enviado (write-ahead para conciliação).
+  createSentAt    DateTime? @map("create_sent_at") @db.Timestamptz(3)
+  nextRunAt       DateTime  @default(now()) @map("next_run_at") @db.Timestamptz(3)
+  marketplaceItemId String? @map("marketplace_item_id")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime? @map("started_at") @db.Timestamptz(3)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  draft    ListingDraft         @relation(fields: [listingDraftId], references: [id], onDelete: Restrict)
+  attempts PublicationAttempt[]
+
+  @@index([status, nextRunAt])
+  @@index([batchId])
+  @@map("marketplace_publication_jobs")
+}
+
+/// Cada chamada ao Mercado Livre feita por um job (requisição e resposta sanitizadas).
+model PublicationAttempt {
+  id                 BigInt   @id @default(autoincrement())
+  publicationJobId   String   @map("publication_job_id") @db.Uuid
+  requestId          String   @map("request_id")
+  operation          String
+  sanitizedRequest   Json?    @map("sanitized_request")
+  sanitizedResponse  Json?    @map("sanitized_response")
+  httpStatus         Int?     @map("http_status")
+  errorCode          String?  @map("error_code")
+  errorMessage       String?  @map("error_message")
+  durationMs         Int?     @map("duration_ms")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  job PublicationJob @relation(fields: [publicationJobId], references: [id], onDelete: Cascade)
+
+  @@index([publicationJobId, createdAt])
+  @@map("marketplace_publication_attempts")
+}
+
+/// Cache de categorias, atributos e especificações técnicas do Mercado Livre.
+model CategoryCache {
+  id                 Int      @id @default(autoincrement())
+  categoryId         String   @unique @map("category_id")
+  categoryName       String?  @map("category_name")
+  categoryJson       Json?    @map("category_json")
+  attributesJson     Json?    @map("attributes_json")
+  technicalSpecsJson Json?    @map("technical_specs_json")
+  fetchedAt          DateTime @default(now()) @map("fetched_at") @db.Timestamptz(3)
+  expiresAt          DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@map("marketplace_category_cache")
+}
+
+/// Trilha de auditoria de rascunhos, publicações e anúncios.
+model ListingEvent {
+  id             BigInt   @id @default(autoincrement())
+  listingDraftId Int      @map("listing_draft_id")
+  listingId      Int?     @map("listing_id")
+  jobId          String?  @map("job_id") @db.Uuid
+  eventType      String   @map("event_type")
+  previousStatus String?  @map("previous_status")
+  newStatus      String?  @map("new_status")
+  details        Json?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  draft   ListingDraft        @relation(fields: [listingDraftId], references: [id], onDelete: Cascade)
+  listing MarketplaceListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  @@index([listingDraftId, createdAt])
+  @@map("marketplace_listing_events")
 }
 
 /// Tarefa persistente de importação, processada em fatias por um worker com lease.

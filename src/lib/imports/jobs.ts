@@ -182,26 +182,26 @@ export async function needsWorker(sql: Sql): Promise<boolean> {
 export const WORKER_LEASE = "ads-import";
 export const LEASE_SECONDS = 90;
 
-export async function acquireLease(sql: Sql, owner: string): Promise<boolean> {
+export async function acquireLease(sql: Sql, owner: string, name: string = WORKER_LEASE): Promise<boolean> {
   const rows = await sql.query<{ owner: string }>(
     `INSERT INTO worker_leases (name, owner, lease_until) VALUES ($1, $2, now() + make_interval(secs => $3::int))
      ON CONFLICT (name) DO UPDATE SET owner = EXCLUDED.owner, lease_until = EXCLUDED.lease_until
      WHERE worker_leases.lease_until < now() OR worker_leases.owner = EXCLUDED.owner
      RETURNING owner`,
-    [WORKER_LEASE, owner, LEASE_SECONDS],
+    [name, owner, LEASE_SECONDS],
   );
   return rows[0]?.owner === owner;
 }
 
 /** Renova o lease; retorna false se outro worker assumiu (o chamador deve parar). */
-export async function renewLease(sql: Sql, owner: string): Promise<boolean> {
+export async function renewLease(sql: Sql, owner: string, name: string = WORKER_LEASE): Promise<boolean> {
   const n = await sql.execute(
     `UPDATE worker_leases SET lease_until = now() + make_interval(secs => $3::int) WHERE name = $1 AND owner = $2`,
-    [WORKER_LEASE, owner, LEASE_SECONDS],
+    [name, owner, LEASE_SECONDS],
   );
   return n > 0;
 }
 
-export async function releaseLease(sql: Sql, owner: string): Promise<void> {
-  await sql.execute(`DELETE FROM worker_leases WHERE name = $1 AND owner = $2`, [WORKER_LEASE, owner]);
+export async function releaseLease(sql: Sql, owner: string, name: string = WORKER_LEASE): Promise<void> {
+  await sql.execute(`DELETE FROM worker_leases WHERE name = $1 AND owner = $2`, [name, owner]);
 }

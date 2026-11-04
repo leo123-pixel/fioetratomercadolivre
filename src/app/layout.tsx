@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <span className="brand-sub">Integrador ADS ↔ Mercado Livre</span>
           <nav className="nav" aria-label="Principal">
             <a href="/produtos">Produtos</a>
+            <a href="/anuncios">Anúncios</a>
             <a href="/importacoes">Importações</a>
             <a href="/configuracoes/tabelas-de-preco">Tabelas de preço</a>
             <a href="/configuracoes/integracoes/mercadolivre">Mercado Livre</a>

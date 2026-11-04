@@ -8,7 +8,7 @@ export const productQuerySchema = z.object({
   stock: z.enum(["positive", "zero", "unknown"]).optional(),
   status: z.enum(["active", "inactive"]).optional(),
   image: z.enum(["with", "without"]).optional(),
-  draft: z.enum(["none", "any", "DRAFT", "READY"]).optional(),
+  draft: z.enum(["none", "any", "DRAFT", "READY", "published", "unpublished"]).optional(),
   price: z.enum(["with", "without"]).optional(),
   sort: z.enum(["name", "ads_id", "updated", "stock"]).optional(),
   page: z.coerce.number().int().min(1).max(100_000).default(1),

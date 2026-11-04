@@ -51,10 +51,26 @@ export const JOB_STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn
   CANCELED: { text: "Cancelada", tone: "" },
 };
 
-export const DRAFT_STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "info" | "" }> = {
+export const DRAFT_STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "info" | "danger" | "" }> = {
   DRAFT: { text: "Rascunho", tone: "info" },
-  READY: { text: "Pronto p/ publicar", tone: "ok" },
+  INCOMPLETE: { text: "Incompleto", tone: "warn" },
+  READY: { text: "Pronto (validar no ML)", tone: "info" },
+  VALIDATING: { text: "Validando", tone: "info" },
+  VALIDATED: { text: "Validado", tone: "ok" },
+  PUBLISHING: { text: "Publicando", tone: "info" },
+  PUBLISHED: { text: "Publicado", tone: "ok" },
+  FAILED: { text: "Falhou", tone: "danger" },
+  UNKNOWN: { text: "Resultado desconhecido", tone: "warn" },
   ARCHIVED: { text: "Arquivado", tone: "" },
+};
+
+export const PUBLICATION_JOB_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "info" | "danger" | "" }> = {
+  QUEUED: { text: "Na fila", tone: "info" },
+  RUNNING: { text: "Enviando", tone: "info" },
+  SUCCEEDED: { text: "Publicado", tone: "ok" },
+  FAILED: { text: "Falhou", tone: "danger" },
+  UNKNOWN: { text: "Resultado desconhecido", tone: "warn" },
+  CANCELED: { text: "Cancelado", tone: "" },
 };
 
 export function stockLabel(total: string | null, branches: number): { text: string; tone: "ok" | "warn" | "" } {
