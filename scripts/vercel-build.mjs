@@ -11,13 +11,27 @@ if (process.env.DATABASE_URL) {
   // em execução ocupam todas as vagas, a conexão do build é recusada; é transitório, então tenta de novo.
   const attempts = 4;
   for (let i = 1; ; i++) {
+    let output = "";
     try {
-      run("npx prisma migrate deploy");
+      output = execSync("npx prisma migrate deploy", { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      process.stdout.write(output);
       break;
     } catch (err) {
-      if (i >= attempts) throw err;
-      console.warn(`[vercel-build] migrate deploy falhou (tentativa ${i}/${attempts}); nova tentativa em ${15 * i}s.`);
-      await sleep(15_000 * i);
+      output = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+      process.stderr.write(output);
+      const poolFull = output.includes("EMAXCONNSESSION");
+      if (i < attempts) {
+        console.warn(`[vercel-build] migrate deploy falhou (tentativa ${i}/${attempts}); nova tentativa em ${15 * i}s.`);
+        await sleep(15_000 * i);
+        continue;
+      }
+      // Pool cheio = a conexão nem foi aberta, nenhuma migration foi aplicada pela metade.
+      // Segue o build (a versão nova reduz as conexões por função); qualquer outro erro interrompe.
+      if (poolFull) {
+        console.warn("[vercel-build] ATENÇÃO: pooler do Supabase cheio; migrations NÃO verificadas neste build. Se houver migration nova, faça redeploy.");
+        break;
+      }
+      throw err;
     }
   }
 } else {
