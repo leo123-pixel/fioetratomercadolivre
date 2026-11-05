@@ -87,10 +87,39 @@ const norm = (s: string) =>
 /** Código IBGE da cidade pela consulta de cidades da ADS (nome + UF). Nunca adivinha. */
 export async function resolveIbge(city: string | null, uf: string | null): Promise<string | null> {
   if (!city || !uf || !/^[A-Z]{2}$/.test(uf)) return null;
-  const r = await adsCall<{ descricao?: string; uf?: string; codigoIbge?: string }[]>("GET", "cidades", { query: { uf } });
-  if (r.status !== 200 || !Array.isArray(r.data)) return null;
-  const hits = r.data.filter((c) => c.descricao && norm(c.descricao) === norm(city) && (c.uf ?? uf).toUpperCase() === uf && /^\d{7}$/.test(String(c.codigoIbge ?? "")));
-  return hits.length === 1 ? String(hits[0].codigoIbge) : null;
+  // 1) Cadastro de cidades da própria ADS (nome + UF).
+  const r = await adsCall<{ descricao?: string; uf?: string; codigoIbge?: string }[]>("GET", "cidades", { query: { uf } }).catch(() => null);
+  if (r?.status === 200 && Array.isArray(r.data)) {
+    const hits = r.data.filter((c) => c.descricao && norm(c.descricao) === norm(city) && (c.uf ?? uf).toUpperCase() === uf && /^\d{7}$/.test(String(c.codigoIbge ?? "")));
+    if (hits.length === 1) return String(hits[0].codigoIbge);
+  }
+  // 2) Lista oficial de municípios do IBGE para a UF (grafia oficial; a ADS pode ter outra grafia ou estar sem o código).
+  //    Só a UF é enviada; nenhum dado do comprador sai do integrador.
+  const ibge = await ibgeMunicipalities(uf);
+  const hits = ibge.filter((m) => norm(m.nome) === norm(city));
+  return hits.length === 1 ? String(hits[0].id) : null;
+}
+
+const ibgeCache = new Map<string, { at: number; list: { id: number; nome: string }[] }>();
+
+async function ibgeMunicipalities(uf: string): Promise<{ id: number; nome: string }[]> {
+  const cached = ibgeCache.get(uf);
+  if (cached && Date.now() - cached.at < 24 * 3_600_000) return cached.list;
+  try {
+    const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`, { signal: AbortSignal.timeout(10_000), cache: "no-store" });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { id?: number; nome?: string }[];
+    const list = (Array.isArray(data) ? data : []).filter((m) => typeof m.id === "number" && /^\d{7}$/.test(String(m.id)) && typeof m.nome === "string") as { id: number; nome: string }[];
+    ibgeCache.set(uf, { at: Date.now(), list });
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+/** Somente testes. */
+export function resetIbgeCacheForTests() {
+  ibgeCache.clear();
 }
 
 /** Monta o cadastro de cliente (POST /clientes) a partir dos dados fiscais. Campos ausentes vão em "missing". */

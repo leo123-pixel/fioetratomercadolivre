@@ -632,3 +632,29 @@ describe("cliente inativo na ADS", () => {
     expect(built.issues).toContainEqual(expect.objectContaining({ code: "customer_inactive", blocking: false }));
   });
 });
+
+describe("código IBGE da cidade", () => {
+  it("quando a ADS não tem a cidade (ou outra grafia), usa a lista oficial do IBGE pela UF", async () => {
+    mockWorld();
+    useHomologation();
+    const { resolveIbge, resetIbgeCacheForTests } = await import("@/lib/ads/customers");
+    resetIbgeCacheForTests();
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.hostname === "servicodados.ibge.gov.br") {
+          urls.push(url.pathname);
+          return new Response(JSON.stringify([{ id: 3520905, nome: "Ipaussu" }, { id: 3550308, nome: "São Paulo" }]), { status: 200 });
+        }
+        return original(input, init);
+      }),
+    );
+    // A ADS simulada só conhece "SAO PAULO": Ipaussu vem do IBGE.
+    expect(await resolveIbge("Ipaussu", "SP")).toBe("3520905");
+    expect(await resolveIbge("Cidade Inexistente", "SP")).toBeNull();
+    expect(urls).toEqual(["/api/v1/localidades/estados/SP/municipios"]); // cache por UF; só a UF é enviada
+  });
+});
