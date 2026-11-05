@@ -68,7 +68,13 @@ export interface ListingDraft {
   updatedAt: Date;
 }
 
-export const DRAFT_SELECT = `
+export /** Anúncio mais relevante do rascunho: o vigente; senão, o mais recente (encerrado/excluído). */
+const LISTING_JOIN = `LEFT JOIN LATERAL (
+    SELECT * FROM marketplace_listings x WHERE x.listing_draft_id = d.id
+    ORDER BY (x.status NOT IN ('closed', 'deleted')) DESC, x.id DESC LIMIT 1
+  ) ml ON true`;
+
+const DRAFT_SELECT = `
   SELECT d.id, d.product_id AS "productId", p.ads_product_id AS "adsProductId",
          COALESCE(p.name_custom, p.name_original) AS "productName", p.inactive AS "productInactive",
          d.title, d.family_name AS "familyName", d.description, d.selected_price_table AS "selectedPriceTable",
@@ -88,10 +94,7 @@ export const DRAFT_SELECT = `
          d.created_at AS "createdAt", d.updated_at AS "updatedAt"
   FROM listing_drafts d
   JOIN products p ON p.id = d.product_id
-  LEFT JOIN LATERAL (
-    SELECT * FROM marketplace_listings x WHERE x.listing_draft_id = d.id
-    ORDER BY (x.status NOT IN ('closed', 'deleted')) DESC, x.id DESC LIMIT 1
-  ) ml ON true`;
+  ${LISTING_JOIN}`;
 
 export async function getDraft(sql: Sql, id: number): Promise<ListingDraft | null> {
   const rows = await sql.query<ListingDraft>(`${DRAFT_SELECT} WHERE d.id = $1::int`, [id]);
@@ -110,12 +113,21 @@ export const DRAFT_TABS: Record<string, DraftStatus[]> = {
   prontos: ["READY", "VALIDATED"],
   publicando: ["VALIDATING", "PUBLISHING"],
   publicados: ["PUBLISHED"],
+  encerrados: ["PUBLISHED"],
   erros: ["FAILED"],
   desconhecidos: ["UNKNOWN"],
   arquivados: ["ARCHIVED"],
 };
 
-export async function listDrafts(sql: Sql, opts: { status?: DraftStatus; statuses?: DraftStatus[]; q?: string; page?: number; pageSize?: number } = {}) {
+/** Abas que separam o anúncio vigente dos encerrados/excluídos no Mercado Livre. */
+export const TAB_LISTING: Record<string, "current" | "ended"> = { publicados: "current", encerrados: "ended" };
+
+const ENDED_SQL = `('closed', 'deleted')`;
+
+export async function listDrafts(
+  sql: Sql,
+  opts: { status?: DraftStatus; statuses?: DraftStatus[]; listing?: "current" | "ended"; q?: string; page?: number; pageSize?: number } = {},
+) {
   const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
   const page = Math.max(opts.page ?? 1, 1);
   const params: unknown[] = [];
@@ -125,13 +137,15 @@ export async function listDrafts(sql: Sql, opts: { status?: DraftStatus; statuse
     params.push(statuses);
     where.push(`d.status = ANY($${params.length}::text[])`);
   }
+  if (opts.listing === "ended") where.push(`ml.status IN ${ENDED_SQL}`);
+  if (opts.listing === "current") where.push(`(ml.status IS NULL OR ml.status NOT IN ${ENDED_SQL})`);
   if (opts.q?.trim()) {
     params.push(`%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
     where.push(`(COALESCE(p.name_custom, p.name_original) ILIKE $${params.length} OR d.title ILIKE $${params.length} OR p.ads_product_id::text = trim(both '%' from $${params.length}))`);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const [{ total }] = await sql.query<{ total: number }>(
-    `SELECT count(*)::int AS total FROM listing_drafts d JOIN products p ON p.id = d.product_id ${clause}`,
+    `SELECT count(*)::int AS total FROM listing_drafts d JOIN products p ON p.id = d.product_id ${LISTING_JOIN} ${clause}`,
     params,
   );
   params.push(pageSize, (page - 1) * pageSize);
@@ -140,7 +154,10 @@ export async function listDrafts(sql: Sql, opts: { status?: DraftStatus; statuse
     params,
   );
   const counts = await sql.query<{ status: string; n: number }>(`SELECT status, count(*)::int AS n FROM listing_drafts GROUP BY status`);
-  return { items, total, page, pageSize, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
+  const [{ ended }] = await sql.query<{ ended: number }>(
+    `SELECT count(*)::int AS ended FROM listing_drafts d ${LISTING_JOIN} WHERE d.status = 'PUBLISHED' AND ml.status IN ${ENDED_SQL}`,
+  );
+  return { items, total, page, pageSize, endedPublished: ended, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
 }
 
 export interface CreateDraftsResult {

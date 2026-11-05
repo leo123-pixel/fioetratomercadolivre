@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, formatNumber, formatPercent, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
+import { useAutoListingSync } from "@/app/useAutoListingSync";
+import { draftDisplayStatus, formatDateTime, formatMoney, formatNumber, formatPercent, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
 
 // ---------------------------------------------------------------------------- tipos
 
@@ -154,7 +155,8 @@ export function ListingEditor(props: {
   const [review, setReview] = useState<ReviewData | null>(null);
 
   const issues: Issue[] = draft.validationResult?.issues ?? [];
-  const status = DRAFT_STATUS_LABEL[draft.status] ?? { text: draft.status, tone: "" };
+  const status = draftDisplayStatus(draft.status, draft.listingStatus);
+  useAutoListingSync(draft.status === "PUBLISHED" && Boolean(draft.marketplaceItemId));
   const maxTitle = typeof categoryInfo?.settings.max_title_length === "number" ? (categoryInfo.settings.max_title_length as number) : 60;
 
   // ------------------------------------------------------------ carregamento da categoria

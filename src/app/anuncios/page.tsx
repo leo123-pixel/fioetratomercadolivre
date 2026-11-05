@@ -1,5 +1,5 @@
 import { requireAdminPage } from "@/lib/auth/page-guard";
-import { DRAFT_TABS, listDrafts } from "@/lib/catalog/drafts";
+import { DRAFT_TABS, listDrafts, TAB_LISTING } from "@/lib/catalog/drafts";
 import { logger } from "@/lib/logger";
 import { getCapabilities } from "@/lib/meli/capabilities";
 import { getSql } from "@/lib/sql";
@@ -14,6 +14,7 @@ const TAB_LABELS: Record<string, string> = {
   prontos: "Prontos",
   publicando: "Em publicação",
   publicados: "Publicados",
+  encerrados: "Encerrados/excluídos no ML",
   erros: "Com erro",
   desconhecidos: "Resultado desconhecido",
   arquivados: "Arquivados",
@@ -27,12 +28,14 @@ export default async function AnunciosPage({ searchParams }: { searchParams: Pro
   let data, caps;
   try {
     const sql = getSql();
-    [data, caps] = await Promise.all([listDrafts(sql, { statuses: DRAFT_TABS[tab], q: sp.q, page, pageSize: 50 }), getCapabilities(sql)]);
+    [data, caps] = await Promise.all([listDrafts(sql, { statuses: DRAFT_TABS[tab], listing: TAB_LISTING[tab], q: sp.q, page, pageSize: 50 }), getCapabilities(sql)]);
   } catch (err) {
     logger.error("Falha ao carregar anúncios", { err });
     return <PageProblem kind="database" />;
   }
-  const tabCounts = Object.fromEntries(Object.entries(DRAFT_TABS).map(([k, statuses]) => [k, statuses.reduce((acc, s) => acc + (data.counts[s] ?? 0), 0)]));
+  const tabCounts: Record<string, number> = Object.fromEntries(Object.entries(DRAFT_TABS).map(([k, statuses]) => [k, statuses.reduce((acc, s) => acc + (data.counts[s] ?? 0), 0)]));
+  tabCounts.encerrados = data.endedPublished;
+  tabCounts.publicados = (data.counts.PUBLISHED ?? 0) - data.endedPublished;
 
   return (
     <>

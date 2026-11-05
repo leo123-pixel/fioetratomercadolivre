@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { DRAFT_STATUS_LABEL, listingStatusLabel } from "@/lib/format";
+import { useAutoListingSync } from "@/app/useAutoListingSync";
 
 /** Resumo do anúncio do produto e acesso ao editor completo (/anuncios/preparar/[id]). */
 export function ListingCard(props: {
@@ -12,6 +13,7 @@ export function ListingCard(props: {
   draft: { id: number; status: string; marketplaceItemId: string | null; permalink: string | null; listingStatus: string | null } | null;
 }) {
   const router = useRouter();
+  useAutoListingSync(Boolean(props.draft?.marketplaceItemId));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const status = props.draft

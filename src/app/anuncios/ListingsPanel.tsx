@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { DRAFT_STATUS_LABEL, formatDateTime, formatMoney, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
+import { draftDisplayStatus, formatDateTime, formatMoney, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
+import { useAutoListingSync } from "@/app/useAutoListingSync";
 
 interface Row {
   id: number;
@@ -49,6 +50,7 @@ export function ListingsPanel(props: {
   account: { meliUserId: string | null; nickname: string | null; canWrite: boolean; connected: boolean };
 }) {
   const router = useRouter();
+  useAutoListingSync(props.account.connected && props.rows.some((r) => r.marketplaceItemId));
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number; validated: number; errors: number } | null>(null);
@@ -277,7 +279,7 @@ export function ListingsPanel(props: {
             </thead>
             <tbody>
               {props.rows.map((r) => {
-                const s = DRAFT_STATUS_LABEL[r.status] ?? { text: r.status, tone: "" };
+                const s = draftDisplayStatus(r.status, r.listingStatus);
                 return (
                   <tr key={r.id} className={selected.has(r.id) ? "selected" : undefined}>
                     <td>
@@ -314,9 +316,9 @@ export function ListingsPanel(props: {
                     <td className="num">{r.listingQuantity ?? "—"}</td>
                     <td>
                       <span className={`chip ${s.tone}`}>{s.text}</span>
-                      {r.listingStatus && (
+                      {r.listingStatus && r.status !== "PUBLISHED" && (
                         <span className={`chip ${listingStatusLabel(r.listingStatus).tone}`} style={{ marginLeft: 4 }}>
-                          {listingStatusLabel(r.listingStatus).text}
+                          anterior: {listingStatusLabel(r.listingStatus).text}
                         </span>
                       )}
                     </td>

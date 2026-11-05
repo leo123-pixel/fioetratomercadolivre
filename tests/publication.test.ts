@@ -10,7 +10,8 @@ import { POST as publishRoute } from "@/app/api/listing-drafts/[id]/publish/rout
 import { POST as batchRoute } from "@/app/api/listing-drafts/publish-batch/route";
 import { POST as reconcileRoute } from "@/app/api/marketplace/publication-jobs/[id]/reconcile/route";
 import { POST as cancelRoute } from "@/app/api/marketplace/publication-jobs/[id]/cancel/route";
-import { createDrafts, getDraft, updateDraft } from "@/lib/catalog/drafts";
+import { createDrafts, getDraft, listDrafts, updateDraft } from "@/lib/catalog/drafts";
+import { draftDisplayStatus } from "@/lib/format";
 import { getCapabilities } from "@/lib/meli/capabilities";
 import { getCategory, getCategoryAttributes, type MeliAttribute } from "@/lib/meli/categories";
 import { buildItemPayload, fingerprint, loadContext } from "@/lib/publish/payload";
@@ -672,5 +673,31 @@ describe("republicação depois de anúncio encerrado ou excluído no ML", () =>
         [p.productId, draftId],
       ),
     ).rejects.toBeTruthy();
+  });
+});
+
+describe("exibição de anúncio encerrado/excluído", () => {
+  it("rascunho publicado com anúncio excluído sai da aba Publicados, entra em Encerrados e mostra o status real", async () => {
+    const ml = await setup();
+    const draftId = await seedValidatedDraft();
+    await publish(draftId);
+    await runWorker();
+    let pub = await listDrafts(t.sql(), { statuses: ["PUBLISHED"], listing: "current" });
+    expect(pub.items.map((d) => d.id)).toEqual([draftId]);
+    expect(pub.endedPublished).toBe(0);
+
+    const item = [...ml.state.items.values()].find((i) => i.id === "MLB1000")!;
+    item.status = "closed";
+    item.sub_status = ["deleted"];
+    await syncAllListings(t.sql());
+
+    pub = await listDrafts(t.sql(), { statuses: ["PUBLISHED"], listing: "current" });
+    expect(pub.items).toHaveLength(0);
+    const ended = await listDrafts(t.sql(), { statuses: ["PUBLISHED"], listing: "ended" });
+    expect(ended.items.map((d) => d.id)).toEqual([draftId]);
+    expect(ended.endedPublished).toBe(1);
+    expect(draftDisplayStatus(ended.items[0].status, ended.items[0].listingStatus)).toEqual({ text: "Excluído no ML", tone: "danger" });
+    expect(draftDisplayStatus("PUBLISHED", "active").text).toBe("Ativo no ML");
+    expect(draftDisplayStatus("DRAFT", "deleted").text).toBe("Rascunho");
   });
 });

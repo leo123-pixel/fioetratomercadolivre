@@ -95,3 +95,12 @@ export function listingStatusLabel(status: string | null | undefined): { text: s
   if (!status) return { text: "Publicado", tone: "ok" };
   return LISTING_STATUS_LABEL[status] ?? { text: `ML: ${status}`, tone: "" };
 }
+
+/**
+ * Situação exibida para um rascunho: depois de publicado, vale o status real do anúncio no ML
+ * (ativo, pausado, encerrado, excluído) em vez de "Publicado".
+ */
+export function draftDisplayStatus(draftStatus: string, listingStatus: string | null | undefined): { text: string; tone: "ok" | "warn" | "info" | "danger" | "" } {
+  if (draftStatus === "PUBLISHED" && listingStatus) return listingStatusLabel(listingStatus);
+  return DRAFT_STATUS_LABEL[draftStatus] ?? { text: draftStatus, tone: "" };
+}

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { DRAFT_STATUS_LABEL, formatMoney, listingStatusLabel, stockLabel } from "@/lib/format";
+import { useAutoListingSync } from "@/app/useAutoListingSync";
 
 export interface ProductRowView {
   id: number;
@@ -71,6 +72,7 @@ export function ProductTable({
   filter: Record<string, string>;
 }) {
   const router = useRouter();
+  useAutoListingSync(rows.some((r) => r.marketplaceItemId));
   /** id local → id ADS */
   const [selected, setSelected] = useState<Map<number, number>>(new Map());
   const [busy, setBusy] = useState(false);
