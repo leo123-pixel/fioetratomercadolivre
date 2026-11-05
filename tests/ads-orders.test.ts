@@ -598,3 +598,26 @@ describe("produção: trava explícita e separação por ambiente", () => {
     }
   });
 });
+
+describe("operações comerciais", () => {
+  it("junta as operações das consultas com e sem o filtro mobile (sem duplicar)", async () => {
+    mockWorld();
+    await seedProduct(1804);
+    const original = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.pathname.endsWith("/operacoes")) {
+          const m = url.searchParams.get("mobile");
+          const ops = m === "false" ? [{ codigo: "001", descricao: "VENDA DE MERCADORIA", inativo: false }, { codigo: "908", descricao: "VENDA MOBILE", inativo: false }] : [{ codigo: "908", descricao: "VENDA MOBILE", inativo: false }];
+          return new Response(JSON.stringify(ops), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return original(input, init);
+      }),
+    );
+    const { fetchCommercialOptions } = await import("@/lib/ads/commercial");
+    const o = await fetchCommercialOptions(t.sql());
+    expect(o.operacoes.map((x) => x.code)).toEqual(["001", "908"]);
+  });
+});

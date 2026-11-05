@@ -132,7 +132,20 @@ export async function fetchCommercialOptions(sql: Sql): Promise<CommercialOption
       return [];
     }
   }
-  const operacoes = await list("operacoes");
+  // A rota tem o filtro opcional "mobile"; sem ele a ADS pode devolver só parte das operações.
+  // Consulta as três variações e junta por código (sem duplicar).
+  const operacoes: Record<string, unknown>[] = [];
+  const seenOps = new Set<string>();
+  for (const q of [undefined, { mobile: "false" }, { mobile: "true" }]) {
+    for (const o of await list("operacoes", q)) {
+      const code = s(o.codigo);
+      if (code && !seenOps.has(code)) {
+        seenOps.add(code);
+        operacoes.push(o);
+      }
+    }
+  }
+  operacoes.sort((a, b) => s(a.codigo).localeCompare(s(b.codigo), "pt-BR", { numeric: true }));
   const origens = await list("origem-pedido");
   const formas = await list("formas-de-pagamento");
   const prazos = await list("prazos");
