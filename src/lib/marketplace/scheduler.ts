@@ -76,7 +76,12 @@ export interface SyncJobResult {
 }
 
 /** Executa uma rotina periódica registrando-a em marketplace_sync_jobs (com lease contra execuções simultâneas). */
-export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger): Promise<SyncJobResult> {
+/** Tempo máximo de trabalho de uma execução (a função tem limite de 60 s na Vercel). */
+export const JOB_BUDGET_MS = 40_000;
+export const TICK_BUDGET_MS = 45_000;
+
+export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger, opts: { deadline?: number } = {}): Promise<SyncJobResult> {
+  const deadline = opts.deadline ?? Date.now() + JOB_BUDGET_MS;
   const owner = randomUUID();
   const lease = `ml-sync:${type}`;
   if (!(await acquireLease(sql, owner, lease))) return { id: null, type, status: "BUSY", processed: 0, changed: 0, failed: 0, details: {} };
@@ -90,15 +95,17 @@ export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger):
   let result: SyncJobResult;
   try {
     if (type === "LISTINGS_RECONCILE") {
-      const r = await syncAllListings(sql, { source: "sync", jobId: id });
-      result = { id, type, status: r.failed ? "PARTIAL" : "COMPLETED", processed: r.checked, changed: r.changed, failed: r.failed, details: { ...r } };
+      // Descoberta de anúncios sem vínculo: sempre no acionamento manual; no agendador, no máximo a cada hora.
+      const r = await syncAllListings(sql, { source: "sync", jobId: id }, { deadline, discover: trigger === "manual" ? "force" : "auto" });
+      const partial = r.failed > 0 || r.pending > 0 || r.discovery === "partial";
+      result = { id, type, status: partial ? "PARTIAL" : "COMPLETED", processed: r.checked, changed: r.changed, failed: r.failed, details: { ...r } };
     } else if (type === "MISSED_FEEDS") {
-      const r = await recoverMissedFeeds(sql);
+      const r = await recoverMissedFeeds(sql, undefined, { deadline });
       const topicFailures = Object.keys(r.topicErrors).length;
-      result = { id, type, status: topicFailures ? "PARTIAL" : "COMPLETED", processed: r.fetched, changed: r.stored, failed: topicFailures, details: { ...r } };
+      result = { id, type, status: topicFailures || r.skippedTopics.length ? "PARTIAL" : "COMPLETED", processed: r.fetched, changed: r.stored, failed: topicFailures, details: { ...r } };
     } else {
-      const r = await recoverRecentOrders(sql);
-      result = { id, type, status: "COMPLETED", processed: r.checked, changed: r.enqueued, failed: 0, details: { ...r } };
+      const r = await recoverRecentOrders(sql, { deadline });
+      result = { id, type, status: r.complete ? "COMPLETED" : "PARTIAL", processed: r.checked, changed: r.enqueued, failed: 0, details: { ...r } };
     }
   } catch (err) {
     const c = classifyError(err);
@@ -148,18 +155,23 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
     [JSON.stringify({ trigger, at: new Date().toISOString() })],
   );
+  // Prazo total do tick: a função tem limite de 60 s; o que não couber fica para o próximo tick.
+  const deadline = Date.now() + TICK_BUDGET_MS;
+  const left = () => deadline - Date.now();
   await ensureSchedulerRegistration(sql).catch((err) => logger.warn("Falha ao registrar o agendador", { err }));
-  const events = await processEvents({ sql, budgetMs: 20_000 });
+  // Um evento pode levar alguns segundos (pedido + envio): o orçamento é checado antes de cada um.
+  const events = await processEvents({ sql, budgetMs: 15_000 });
   const jobs: SyncJobResult[] = [];
   // Sem conta conectada as rotinas não têm o que consultar; os eventos continuam guardados.
   const conn = await getStore().getCurrentConnection();
   const connected = conn?.status === "ACTIVE" && !!conn.refreshTokenEnc;
-  for (const type of ["LISTINGS_RECONCILE", "ORDERS_RECOVERY", "MISSED_FEEDS"] as SyncJobType[]) {
-    if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger));
+  for (const type of ["ORDERS_RECOVERY", "LISTINGS_RECONCILE", "MISSED_FEEDS"] as SyncJobType[]) {
+    if (left() < 12_000) break;
+    if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger, { deadline }));
   }
-  // Eventos gerados pelas rotinas (missed_feeds, pedidos recuperados) já entram nesta execução.
-  if (jobs.some((j) => j.changed > 0 && j.type !== "LISTINGS_RECONCILE")) {
-    const more = await processEvents({ sql, budgetMs: 15_000 });
+  // Eventos gerados pelas rotinas (missed_feeds, pedidos recuperados) entram nesta execução se houver tempo.
+  if (left() > 10_000 && jobs.some((j) => j.changed > 0 && j.type !== "LISTINGS_RECONCILE")) {
+    const more = await processEvents({ sql, budgetMs: left() - 8_000 });
     events.processed += more.processed;
   }
   await housekeeping(sql).catch((err) => logger.warn("Falha na limpeza periódica", { err }));

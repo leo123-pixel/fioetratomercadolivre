@@ -33,14 +33,21 @@ export interface MissedFeedsResult {
   duplicates: number;
   rejected: number;
   topicErrors: Record<string, string>;
+  /** Tópicos que ficaram para a próxima execução por falta de tempo. */
+  skippedTopics: string[];
 }
 
-export async function recoverMissedFeeds(sql: Sql, topics: string[] = SUPPORTED_TOPICS): Promise<MissedFeedsResult> {
+export async function recoverMissedFeeds(sql: Sql, topics: string[] = SUPPORTED_TOPICS, opts: { deadline?: number } = {}): Promise<MissedFeedsResult> {
   const appId = getEnv().MELI_CLIENT_ID;
-  const out: MissedFeedsResult = { fetched: 0, stored: 0, duplicates: 0, rejected: 0, topicErrors: {} };
+  const out: MissedFeedsResult = { fetched: 0, stored: 0, duplicates: 0, rejected: 0, topicErrors: {}, skippedTopics: [] };
+  const late = () => opts.deadline !== undefined && opts.deadline - Date.now() < 4_000;
   for (const topic of topics) {
+    if (late()) {
+      out.skippedTopics.push(topic);
+      continue;
+    }
     try {
-      for (let page = 0; page < MAX_PAGES; page++) {
+      for (let page = 0; page < MAX_PAGES && !late(); page++) {
         const { data } = await withReadRetry(() =>
           meliRequest<{ messages?: MissedMessage[]; total?: number }>("/missed_feeds", {
             auth: true,

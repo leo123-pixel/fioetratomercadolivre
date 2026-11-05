@@ -345,19 +345,36 @@ export interface ReconcileResult {
   stale: number;
   unlinked: number;
   divergent: number;
+  /** Anúncios conhecidos que ficaram para a próxima execução por falta de tempo. */
+  pending: number;
+  /** Descoberta de anúncios sem vínculo: feita por completo, parcial (tempo), ou pulada (feita há pouco). */
+  discovery: "complete" | "partial" | "skipped";
 }
+
+export interface ReconcileOptions {
+  /** Instante (Date.now()) até o qual a rotina pode trabalhar; o restante fica para a próxima. */
+  deadline?: number;
+  /** "auto": descoberta no máximo a cada DISCOVERY_INTERVAL_MIN; "force": sempre; "skip": nunca. */
+  discover?: "auto" | "force" | "skip";
+}
+
+export const DISCOVERY_INTERVAL_MIN = 60;
+const timeLeft = (deadline?: number) => (deadline === undefined ? Infinity : deadline - Date.now());
 
 /**
  * Reconciliação de leitura: relê os anúncios conhecidos em lotes de 20 (multiget oficial GET /items?ids=)
  * e procura anúncios da conta sem correspondência local (GET /users/{id}/items/search, paginado).
- * Anúncios excluídos (terminais) não são relidos. Nada é escrito no Mercado Livre.
+ * Respeita um prazo (deadline): o que não couber fica para a próxima execução. Anúncios excluídos
+ * (terminais) não são relidos. Nada é escrito no Mercado Livre.
  */
-export async function syncAllListings(sql: Sql, ctx: SyncContext = {}): Promise<ReconcileResult> {
+export async function syncAllListings(sql: Sql, ctx: SyncContext = {}, opts: ReconcileOptions = {}): Promise<ReconcileResult> {
+  // Os lidos há mais tempo primeiro: uma execução interrompida pelo prazo continua de onde parou.
   const rows = await sql.query<{ itemId: string; status: string }>(
-    `SELECT marketplace_item_id AS "itemId", status FROM marketplace_listings WHERE status <> 'deleted' ORDER BY id`,
+    `SELECT marketplace_item_id AS "itemId", status FROM marketplace_listings WHERE status <> 'deleted'
+     ORDER BY last_synced_at NULLS FIRST, id`,
   );
   const ids = rows.map((r) => r.itemId).filter((id) => ITEM_ID_RE.test(id));
-  const res: ReconcileResult = { checked: 0, changed: 0, failed: 0, stale: 0, unlinked: 0, divergent: 0 };
+  const res: ReconcileResult = { checked: 0, changed: 0, failed: 0, stale: 0, unlinked: 0, divergent: 0, pending: 0, discovery: "skipped" };
   const tally = (r: ApplyResult) => {
     res.checked++;
     if (r.changed) res.changed++;
@@ -365,6 +382,10 @@ export async function syncAllListings(sql: Sql, ctx: SyncContext = {}): Promise<
     if (r.issues.some((i) => i !== "CLOSED_REMOTE" && i !== "REMOVED_REMOTE")) res.divergent++;
   };
   for (let i = 0; i < ids.length; i += 20) {
+    if (timeLeft(opts.deadline) < 3_000) {
+      res.pending = ids.length - i;
+      break;
+    }
     const chunk = ids.slice(i, i + 20);
     let data: { code: number; body: MeliItemSnapshot }[] = [];
     try {
@@ -399,54 +420,97 @@ export async function syncAllListings(sql: Sql, ctx: SyncContext = {}): Promise<
      WHERE r.listing_id = l.id AND r.resolved_at IS NULL AND r.issue_type IN ('CLOSED_REMOTE', 'REMOVED_REMOTE')
        AND EXISTS (SELECT 1 FROM marketplace_listings n WHERE n.listing_draft_id = l.listing_draft_id AND n.id > l.id)`,
   );
-  res.unlinked = await discoverUnlinkedItems(sql);
+  const mode = opts.discover ?? "force";
+  if (mode !== "skip" && timeLeft(opts.deadline) > 8_000) {
+    let due = mode === "force";
+    if (!due) {
+      const [row] = await sql.query<{ due: boolean }>(
+        `SELECT NOT EXISTS (SELECT 1 FROM app_settings WHERE key = 'meli_discovery_last'
+           AND updated_at > now() - make_interval(mins => $1::int)) AS due`,
+        [DISCOVERY_INTERVAL_MIN],
+      );
+      due = row?.due === true;
+    }
+    if (due) {
+      const d = await discoverUnlinkedItems(sql, opts.deadline);
+      res.unlinked = d.unknown;
+      res.discovery = d.complete ? "complete" : "partial";
+    }
+  }
   return res;
 }
 
-/** IDs de anúncios da conta (todas as páginas). Usa search_type=scan acima de 1000 resultados. */
-export async function listSellerItemIds(sellerId: string, maxItems = 5000): Promise<string[]> {
-  if (!/^\d{1,20}$/.test(sellerId)) return [];
+/** IDs de anúncios da conta (todas as páginas, até o prazo). Usa search_type=scan acima de 1000 resultados. */
+export async function listSellerItemIds(sellerId: string, maxItems = 5000, deadline?: number): Promise<{ ids: string[]; complete: boolean }> {
+  if (!/^\d{1,20}$/.test(sellerId)) return { ids: [], complete: true };
   const ids: string[] = [];
+  const seen = new Set<string>();
   const first = await withReadRetry(() =>
     meliRequest<{ results?: unknown[]; paging?: { total?: number } }>(`/users/${sellerId}/items/search`, { auth: true, query: { offset: 0, limit: 100 } }),
   );
   const total = Math.min(first.data?.paging?.total ?? 0, maxItems);
   const push = (list: unknown[] | undefined) => {
-    for (const r of list ?? []) if (typeof r === "string" && ITEM_ID_RE.test(r) && !ids.includes(r)) ids.push(r);
+    for (const r of list ?? [])
+      if (typeof r === "string" && ITEM_ID_RE.test(r) && !seen.has(r)) {
+        seen.add(r);
+        ids.push(r);
+      }
   };
   push(first.data?.results);
   if (total <= 1000) {
     for (let offset = 100; offset < total; offset += 100) {
+      if (timeLeft(deadline) < 5_000) return { ids, complete: false };
       const page = await withReadRetry(() => meliRequest<{ results?: unknown[] }>(`/users/${sellerId}/items/search`, { auth: true, query: { offset, limit: 100 } }));
       push(page.data?.results);
     }
-  } else {
-    let scrollId: string | undefined;
-    ids.length = 0;
-    for (let guard = 0; guard < 100 && ids.length < maxItems; guard++) {
-      const page = await withReadRetry(() =>
-        meliRequest<{ results?: unknown[]; scroll_id?: string }>(`/users/${sellerId}/items/search`, { auth: true, query: { search_type: "scan", limit: 100, scroll_id: scrollId } }),
-      );
-      const before = ids.length;
-      push(page.data?.results);
-      scrollId = page.data?.scroll_id;
-      if (!scrollId || ids.length === before) break;
-    }
+    return { ids, complete: true };
   }
-  return ids;
+  let scrollId: string | undefined;
+  ids.length = 0;
+  seen.clear();
+  for (let guard = 0; guard < 100 && ids.length < maxItems; guard++) {
+    if (timeLeft(deadline) < 5_000) return { ids, complete: false };
+    const page = await withReadRetry(() =>
+      meliRequest<{ results?: unknown[]; scroll_id?: string }>(`/users/${sellerId}/items/search`, { auth: true, query: { search_type: "scan", limit: 100, scroll_id: scrollId } }),
+    );
+    const before = ids.length;
+    push(page.data?.results);
+    scrollId = page.data?.scroll_id;
+    if (!scrollId || ids.length === before) break;
+  }
+  return { ids, complete: true };
 }
 
-/** Registra como NOT_LINKED os anúncios da conta que o integrador não conhece. Não vincula nada sozinho. */
-async function discoverUnlinkedItems(sql: Sql): Promise<number> {
+/**
+ * Registra como NOT_LINKED os anúncios da conta que o integrador não conhece. Não vincula nada sozinho.
+ * Itens já registrados não são relidos; a lista só é considerada completa (e a próxima descoberta
+ * espaçada) quando todas as páginas e todos os detalhes couberam no prazo.
+ */
+async function discoverUnlinkedItems(sql: Sql, deadline?: number): Promise<{ unknown: number; complete: boolean }> {
   const conn = await getStore().getCurrentConnection();
-  if (!conn?.meliUserId) return 0;
-  const remoteIds = await listSellerItemIds(conn.meliUserId);
+  if (!conn?.meliUserId) return { unknown: 0, complete: true };
+  const listed = await listSellerItemIds(conn.meliUserId, 5000, deadline);
+  const remoteIds = listed.ids;
   const known = new Set(
     (await sql.query<{ id: string }>(`SELECT marketplace_item_id AS id FROM marketplace_listings WHERE marketplace_item_id = ANY($1::text[])`, [remoteIds])).map((r) => r.id),
   );
   const unknown = remoteIds.filter((id) => !known.has(id));
-  for (let i = 0; i < unknown.length; i += 20) {
-    const chunk = unknown.slice(i, i + 20);
+  const recorded = new Set(
+    (
+      await sql.query<{ id: string }>(
+        `SELECT marketplace_item_id AS id FROM marketplace_reconciliation_issues WHERE issue_type = 'NOT_LINKED' AND resolved_at IS NULL AND marketplace_item_id = ANY($1::text[])`,
+        [unknown],
+      )
+    ).map((r) => r.id),
+  );
+  const toFetch = unknown.filter((id) => !recorded.has(id));
+  let complete = listed.complete;
+  for (let i = 0; i < toFetch.length; i += 20) {
+    if (timeLeft(deadline) < 4_000) {
+      complete = false;
+      break;
+    }
+    const chunk = toFetch.slice(i, i + 20);
     const { data } = await withReadRetry(() => meliRequest<{ code: number; body: MeliItemSnapshot }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: ITEM_FIELDS } }));
     for (const entry of Array.isArray(data) ? data : []) {
       const item = entry.body;
@@ -476,5 +540,20 @@ async function discoverUnlinkedItems(sql: Sql): Promise<number> {
      WHERE r.issue_type = 'NOT_LINKED' AND r.resolved_at IS NULL
        AND EXISTS (SELECT 1 FROM marketplace_listings l WHERE l.marketplace_item_id = r.marketplace_item_id)`,
   );
-  return unknown.length;
+  if (listed.complete) {
+    // Itens que não aparecem mais na conta (lista completa) também deixam de ser pendência.
+    await sql.execute(
+      `UPDATE marketplace_reconciliation_issues SET resolved_at = now(), resolution = 'gone'
+       WHERE issue_type = 'NOT_LINKED' AND resolved_at IS NULL AND NOT (marketplace_item_id = ANY($1::text[]))`,
+      [remoteIds],
+    );
+  }
+  if (complete) {
+    await sql.execute(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ('meli_discovery_last', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [JSON.stringify({ remote: remoteIds.length, unknown: unknown.length })],
+    );
+  }
+  return { unknown: unknown.length, complete };
 }

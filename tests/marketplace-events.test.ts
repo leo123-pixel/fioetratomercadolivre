@@ -404,6 +404,58 @@ describe("gestão de anúncios: reconciliação periódica (somente leitura)", (
     expect(jobs).toEqual([{ status: "COMPLETED", processed: 1 }]);
   });
 
+  it("prazo esgotado: a reconciliação para, registra pendentes e continua de onde parou na próxima execução", async () => {
+    await connected();
+    const { state } = mockMeliEvents();
+    for (let i = 0; i < 30; i++) {
+      const id = `MLB${4000 + i}`;
+      await seedListing(id, { ads: 5000 + i });
+      state.items.set(id, item(id, { attributes: [{ id: "SELLER_SKU", value_name: `ADS-${5000 + i}` }] }));
+    }
+    const late = await syncAllListings(t.sql(), {}, { deadline: Date.now() + 1_000 });
+    expect(late).toMatchObject({ checked: 0, pending: 30, discovery: "skipped" });
+    const full = await syncAllListings(t.sql(), {}, { deadline: Date.now() + 60_000 });
+    expect(full).toMatchObject({ checked: 30, pending: 0, discovery: "complete" });
+  });
+
+  it("no agendador a descoberta de anúncios sem vínculo roda no máximo a cada hora; itens já registrados não são relidos", async () => {
+    await connected();
+    const { state } = mockMeliEvents();
+    for (let i = 0; i < 5; i++) state.items.set(`MLB${9100 + i}`, item(`MLB${9100 + i}`, { attributes: [] }));
+    const first = await syncAllListings(t.sql(), {}, { discover: "auto" });
+    expect(first).toMatchObject({ unlinked: 5, discovery: "complete" });
+    const second = await syncAllListings(t.sql(), {}, { discover: "auto" });
+    expect(second.discovery).toBe("skipped");
+    const before = state.calls.filter((c) => c.path === "/items").length;
+    await syncAllListings(t.sql(), {}, { discover: "force" });
+    expect(state.calls.filter((c) => c.path === "/items").length).toBe(before); // nada novo a detalhar
+    state.items.delete("MLB9100");
+    await syncAllListings(t.sql(), {}, { discover: "force" });
+    expect((await openIssues()).filter((x) => x === "NOT_LINKED")).toHaveLength(4); // sumiu da conta → resolvido
+  });
+
+  it("tick respeita o orçamento de tempo: rotinas não começam sem tempo suficiente", async () => {
+    await connected();
+    mockMeliEvents();
+    const realNow = Date.now;
+    let offset = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    setEventHandlersForTesting({
+      orders_v2: async () => {
+        offset += 40_000; // um evento "lento" consome quase todo o orçamento
+        return { outcome: "completed" };
+      },
+    });
+    try {
+      await ingestNotification(t.sql(), notification("orders_v2", "/orders/1"));
+      const r = await runTick(t.sql(), "scheduler");
+      expect(r.events.processed).toBe(1);
+      expect(r.jobs).toEqual([]);
+    } finally {
+      setEventHandlersForTesting(null);
+    }
+  });
+
   it("rate limit (429) na leitura: repete respeitando Retry-After e conclui", async () => {
     await connected();
     const { state } = mockMeliEvents();

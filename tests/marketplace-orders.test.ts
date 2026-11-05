@@ -186,10 +186,10 @@ describe("pedidos (orders_v2): recepção, consulta e armazenamento — nada é 
     const { state } = await setup();
     state.orders.set("2000060", order("2000060", { shipping: null }));
     const r = await recoverRecentOrders(t.sql());
-    expect(r).toEqual({ checked: 1, enqueued: 1 });
+    expect(r).toEqual({ checked: 1, enqueued: 1, complete: true });
     await processEvents({ sql: t.sql() });
     expect(await inbox()).toHaveLength(1);
-    expect(await recoverRecentOrders(t.sql())).toEqual({ checked: 1, enqueued: 0 });
+    expect(await recoverRecentOrders(t.sql())).toMatchObject({ checked: 1, enqueued: 0 });
   });
 
   it("regras de status de preparação e de pagamento", () => {

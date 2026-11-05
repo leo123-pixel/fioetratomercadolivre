@@ -382,13 +382,18 @@ export async function processShipment(sql: Sql, shipmentId: string): Promise<Rec
  * Rede de segurança dos webhooks: pedidos atualizados nas últimas horas (GET /orders/search) que não
  * estão no banco, ou estão com versão anterior, são enfileirados como eventos internos.
  */
-export async function recoverRecentOrders(sql: Sql): Promise<{ checked: number; enqueued: number }> {
+export async function recoverRecentOrders(sql: Sql, opts: { deadline?: number } = {}): Promise<{ checked: number; enqueued: number; complete: boolean }> {
   const seller = await sellerId();
   const hours = getMarketplaceConfig().ordersRecoveryWindowHours;
   const from = new Date(Date.now() - hours * 3_600_000).toISOString();
   let checked = 0;
   let enqueued = 0;
+  let complete = true;
   for (let offset = 0, page = 0; page < 20; page++, offset += 50) {
+    if (opts.deadline !== undefined && opts.deadline - Date.now() < 4_000) {
+      complete = false;
+      break;
+    }
     const { data } = await withReadRetry(() =>
       meliRequest<{ results?: MeliOrder[]; paging?: { total?: number } }>("/orders/search", {
         auth: true,
@@ -407,7 +412,7 @@ export async function recoverRecentOrders(sql: Sql): Promise<{ checked: number; 
     const total = data?.paging?.total ?? 0;
     if (results.length < 50 || offset + 50 >= total) break;
   }
-  return { checked, enqueued };
+  return { checked, enqueued, complete };
 }
 
 // ---------------------------------------------------------------------------
