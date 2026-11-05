@@ -49,6 +49,8 @@ export interface MeliRequestOptions {
   /** true = exige token da conta conectada; "optional" = envia se houver conexão. */
   auth?: boolean | "optional";
   timeoutMs?: number;
+  /** Cabeçalhos extras "x-*" (ex.: x-format-new em /shipments). Nunca authorization. */
+  headers?: Record<string, string>;
 }
 
 export interface MeliResponse<T> {
@@ -104,6 +106,7 @@ export async function meliRequest<T = unknown>(path: string, opts: MeliRequestOp
   for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined && v !== "") url.searchParams.set(k, String(v));
 
   const headers: Record<string, string> = { accept: "application/json" };
+  for (const [k, v] of Object.entries(opts.headers ?? {})) if (/^x-[a-z-]+$/i.test(k)) headers[k.toLowerCase()] = v;
   if (opts.auth) {
     try {
       const { accessToken } = await getValidAccessToken();

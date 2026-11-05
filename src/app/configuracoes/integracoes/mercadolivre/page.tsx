@@ -46,6 +46,11 @@ export default async function MercadoLivreSettingsPage({
         </div>
       )}
       <ConnectionPanel initial={summary} />
+      <p style={{ marginTop: 16 }}>
+        <a className="btn btn-secondary btn-sm" href="/configuracoes/integracoes/mercadolivre/monitoramento">
+          Monitoramento: webhook, eventos, sincronização e divergências
+        </a>
+      </p>
     </div>
   );
 }

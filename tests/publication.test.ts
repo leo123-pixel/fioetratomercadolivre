@@ -20,7 +20,7 @@ import { checkAttributes, issuesFromMeli, validateDraft } from "@/lib/publish/va
 import { MeliHttpError } from "@/lib/meli/api";
 import { MAX_RECONCILE, processPublicationJobs } from "@/lib/publish/worker";
 import { syncAllListings } from "@/lib/publish/listings";
-import { parseItemNotification, processItemNotification } from "@/lib/publish/notifications";
+import { ingestNotification, processEvents, resetSellerCacheForTests } from "@/lib/marketplace/events";
 import { setStorageForTesting, type ObjectStorage } from "@/lib/storage/supabase";
 import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
@@ -577,7 +577,7 @@ describe("status do anúncio depois de publicado (somente leitura no ML)", () =>
   it("sincronização em lote lê pausado e excluído; nada é enviado ao ML além de leituras", async () => {
     const { state, item, draftId } = await published();
     item.status = "paused";
-    expect(await syncAllListings(t.sql())).toEqual({ checked: 1, changed: 1 });
+    expect(await syncAllListings(t.sql())).toMatchObject({ checked: 1, changed: 1, failed: 0 });
     expect(await status()).toBe("paused");
     item.status = "closed";
     item.sub_status = ["deleted"];
@@ -602,13 +602,14 @@ describe("status do anúncio depois de publicado (somente leitura no ML)", () =>
   it("notificação só aciona releitura para item desta conta e desta aplicação; corpo não é confiado", async () => {
     const { item } = await published();
     item.status = "closed";
-    expect(parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "orders_v2", application_id: 1234567890 })).toBeNull();
-    expect(parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 999 })).toBeNull();
-    expect(parseItemNotification({ resource: "/../items/MLB1000", user_id: 42, topic: "items" })).toBeNull();
-    expect(await processItemNotification(t.sql(), { itemId: "MLB1000", userId: "999" })).toBeNull();
+    resetSellerCacheForTests();
+    expect(await ingestNotification(t.sql(), { resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 999 })).toMatchObject({ outcome: "rejected" });
+    expect(await ingestNotification(t.sql(), { resource: "/../items/MLB1000", user_id: 42, topic: "items", application_id: 1234567890 })).toMatchObject({ outcome: "rejected" });
+    expect(await ingestNotification(t.sql(), { _id: "n-other", resource: "/items/MLB1000", user_id: 999, topic: "items", application_id: 1234567890 })).toMatchObject({ status: "IGNORED", reason: "unknown_seller" });
+    await processEvents({ sql: t.sql() });
     expect(await status()).toBe("active");
-    const n = parseItemNotification({ resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 1234567890 })!;
-    expect(await processItemNotification(t.sql(), n)).toBe("closed");
+    expect(await ingestNotification(t.sql(), { _id: "n-ok", resource: "/items/MLB1000", user_id: 42, topic: "items", application_id: 1234567890 })).toMatchObject({ status: "PENDING" });
+    await processEvents({ sql: t.sql() });
     expect(await status()).toBe("closed");
   });
 });

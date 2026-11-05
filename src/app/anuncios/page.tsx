@@ -1,6 +1,9 @@
 import { requireAdminPage } from "@/lib/auth/page-guard";
 import { DRAFT_TABS, listDrafts, TAB_LISTING } from "@/lib/catalog/drafts";
+import { formatDateTime } from "@/lib/format";
 import { logger } from "@/lib/logger";
+import { getMonitoringSummary } from "@/lib/marketplace/health";
+import { kickIfStale } from "@/lib/marketplace/scheduler";
 import { getCapabilities } from "@/lib/meli/capabilities";
 import { getSql } from "@/lib/sql";
 import { PageProblem } from "../PageProblem";
@@ -14,7 +17,12 @@ const TAB_LABELS: Record<string, string> = {
   prontos: "Prontos",
   publicando: "Em publicação",
   publicados: "Publicados",
-  encerrados: "Encerrados/excluídos no ML",
+  ativos: "Ativos",
+  pausados: "Pausados",
+  encerrados: "Encerrados",
+  excluidos: "Excluídos ou indisponíveis",
+  divergencia: "Com divergência",
+  "erro-sync": "Erro de sincronização",
   erros: "Com erro",
   desconhecidos: "Resultado desconhecido",
   arquivados: "Arquivados",
@@ -25,17 +33,25 @@ export default async function AnunciosPage({ searchParams }: { searchParams: Pro
   if ((await requireAdminPage("/anuncios")) === "config") return <PageProblem kind="config" />;
   const tab = sp.tab && sp.tab in DRAFT_TABS ? sp.tab : "rascunhos";
   const page = Math.max(1, Number(sp.page) || 1);
-  let data, caps;
+  let data, caps, health;
   try {
     const sql = getSql();
-    [data, caps] = await Promise.all([listDrafts(sql, { statuses: DRAFT_TABS[tab], listing: TAB_LISTING[tab], q: sp.q, page, pageSize: 50 }), getCapabilities(sql)]);
+    [data, caps, health] = await Promise.all([
+      listDrafts(sql, { statuses: DRAFT_TABS[tab], listing: TAB_LISTING[tab], q: sp.q, page, pageSize: 50 }),
+      getCapabilities(sql),
+      getMonitoringSummary(sql),
+    ]);
+    await kickIfStale(sql);
   } catch (err) {
     logger.error("Falha ao carregar anúncios", { err });
     return <PageProblem kind="database" />;
   }
   const tabCounts: Record<string, number> = Object.fromEntries(Object.entries(DRAFT_TABS).map(([k, statuses]) => [k, statuses.reduce((acc, s) => acc + (data.counts[s] ?? 0), 0)]));
-  tabCounts.encerrados = data.endedPublished;
-  tabCounts.publicados = (data.counts.PUBLISHED ?? 0) - data.endedPublished;
+  for (const [k, filter] of Object.entries(TAB_LISTING)) tabCounts[k] = data.listingCounts[filter] ?? 0;
+  const ev = health.events;
+  const pending = (ev.byStatus.PENDING ?? 0) + (ev.byStatus.RETRYING ?? 0) + (ev.byStatus.PROCESSING ?? 0);
+  const divergences = Object.entries(health.divergences).reduce((a, [, n]) => a + n, 0);
+  const lastSync = health.jobs.find((j) => j.type === "LISTINGS_RECONCILE");
 
   return (
     <>
@@ -47,10 +63,36 @@ export default async function AnunciosPage({ searchParams }: { searchParams: Pro
           {caps.publicationModel === "USER_PRODUCTS" ? "User Products" : caps.publicationModel === "CLASSIC" ? "clássico" : "não detectado"}
         </span>
       </div>
+      <section className="kpis" aria-label="Indicadores de sincronização">
+        <a className="kpi" href="/configuracoes/integracoes/mercadolivre/monitoramento">
+          <strong>{lastSync ? formatDateTime(lastSync.finishedAt ?? lastSync.startedAt) : "nunca"}</strong>
+          <span>Última sincronização{lastSync && lastSync.status !== "COMPLETED" ? ` (${lastSync.status})` : ""}</span>
+        </a>
+        <a className="kpi" href="/anuncios?tab=publicados">
+          <strong>{health.listings.current}</strong>
+          <span>Anúncios monitorados (vigentes)</span>
+        </a>
+        <a className="kpi" href="/configuracoes/integracoes/mercadolivre/monitoramento">
+          <strong>{Object.values(ev.last24h).reduce((a, n) => a + n, 0)}</strong>
+          <span>Eventos recebidos (24 h)</span>
+        </a>
+        <a className="kpi" href="/configuracoes/integracoes/mercadolivre/monitoramento?status=PENDING">
+          <strong>{pending}</strong>
+          <span>Eventos pendentes</span>
+        </a>
+        <a className="kpi" href="/configuracoes/integracoes/mercadolivre/monitoramento?status=FAILED">
+          <strong>{ev.byStatus.FAILED ?? 0}</strong>
+          <span>Eventos com erro</span>
+        </a>
+        <a className="kpi" href="/anuncios?tab=divergencia">
+          <strong>{divergences}</strong>
+          <span>Divergências abertas</span>
+        </a>
+      </section>
       <nav className="toolbar" aria-label="Situação dos anúncios" style={{ marginBottom: 12 }}>
         {Object.keys(DRAFT_TABS).map((k) => (
           <a key={k} href={`/anuncios?tab=${k}`} className={`btn btn-sm ${k === tab ? "btn-primary" : "btn-secondary"}`}>
-            {TAB_LABELS[k]} ({tabCounts[k]})
+            {TAB_LABELS[k] ?? k} ({tabCounts[k]})
           </a>
         ))}
       </nav>

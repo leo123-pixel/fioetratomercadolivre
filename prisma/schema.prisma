@@ -128,6 +128,7 @@ model Product {
   images   ProductImage[]
   draft    ListingDraft?
   listings MarketplaceListing[]
+  orderItems OrderItem[]
 
   @@index([supplierId])
   @@index([divisionId])
@@ -299,9 +300,27 @@ model MarketplaceListing {
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt            DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
-  product Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
-  draft   ListingDraft @relation(fields: [listingDraftId], references: [id], onDelete: Restrict)
-  events  ListingEvent[]
+  // --- Fases 4/5: fotografia do que o Mercado Livre devolveu (price/quantity acima = valores publicados) ---
+  /// Status original da API (status acima é o local, com "deleted" para excluído).
+  remoteStatus      String?   @map("remote_status")
+  remoteSubStatus   Json?     @map("remote_sub_status")
+  remotePrice       Decimal?  @map("remote_price") @db.Decimal(14, 2)
+  remoteQuantity    Int?      @map("remote_quantity")
+  remoteTitle       String?   @map("remote_title")
+  remoteCategoryId  String?   @map("remote_category_id")
+  remoteSellerSku   String?   @map("remote_seller_sku")
+  /// last_updated do item no ML: leituras mais antigas não sobrescrevem as mais novas.
+  remoteLastUpdated DateTime? @map("remote_last_updated") @db.Timestamptz(3)
+  syncErrorCode     String?   @map("sync_error_code")
+  syncErrorMessage  String?   @map("sync_error_message")
+  syncErrorAt       DateTime? @map("sync_error_at") @db.Timestamptz(3)
+
+  product    Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  draft      ListingDraft @relation(fields: [listingDraftId], references: [id], onDelete: Restrict)
+  events     ListingEvent[]
+  snapshots  ListingSnapshot[]
+  issues     ReconciliationIssue[]
+  orderItems OrderItem[]
 
   /// Unicidade do anúncio vigente (status fora de closed/deleted) por rascunho e por produto+conta:
   /// índices únicos parciais criados na migration 20261106000000_republish_ended_listings.
@@ -462,4 +481,263 @@ model AppSetting {
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@map("app_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Fases 4 e 5 — notificações do Mercado Livre (fila persistente), sincronização/reconciliação e
+// caixa de entrada de pedidos. Lidos e gravados via SQL parametrizado (src/lib/marketplace/*).
+// CHECKs, índices parciais e o agendador pg_cron estão na migration 20261107000000_marketplace_events_orders.
+// ---------------------------------------------------------------------------
+
+/// Notificação recebida (webhook, missed_feeds, reprocessamento ou evento interno). É a própria fila.
+model WebhookEvent {
+  id            BigInt    @id @default(autoincrement())
+  /// _id da notificação no ML (deduplicação de reentregas).
+  eventId       String    @unique(map: "marketplace_webhook_events_event_id_key") @map("event_id")
+  /// webhook | missed_feeds | manual | derived
+  source        String    @default("webhook")
+  applicationId String?   @map("application_id")
+  sellerId      String?   @map("seller_id")
+  topic         String
+  resource      String
+  actions       Json      @default("[]")
+  payload       Json?
+  mlAttempts    Int?      @map("ml_attempts")
+  sentAt        DateTime? @map("sent_at") @db.Timestamptz(3)
+  receivedAt    DateTime  @default(now()) @map("received_at") @db.Timestamptz(3)
+  /// PENDING | PROCESSING | COMPLETED | FAILED | RETRYING | IGNORED
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(8) @map("max_attempts")
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  lockedUntil   DateTime? @map("locked_until") @db.Timestamptz(3)
+  startedAt     DateTime? @map("started_at") @db.Timestamptz(3)
+  processedAt   DateTime? @map("processed_at") @db.Timestamptz(3)
+  durationMs    Int?      @map("duration_ms")
+  lastErrorCode String?   @map("last_error_code")
+  lastError     String?   @map("last_error")
+  ignoredReason String?   @map("ignored_reason")
+  result        Json?
+  coalescedInto BigInt?   @map("coalesced_into")
+  correlationId String    @default(dbgenerated("gen_random_uuid()")) @map("correlation_id") @db.Uuid
+
+  errors    EventProcessingError[]
+  snapshots ListingSnapshot[]
+
+  @@index([status, nextAttemptAt], map: "marketplace_webhook_events_queue_idx")
+  @@index([topic, resource], map: "marketplace_webhook_events_resource_idx")
+  @@map("marketplace_webhook_events")
+}
+
+model EventProcessingError {
+  id           BigInt   @id @default(autoincrement())
+  eventId      BigInt   @map("event_id")
+  attempt      Int
+  errorCode    String   @map("error_code")
+  errorMessage String   @map("error_message")
+  httpStatus   Int?     @map("http_status")
+  retryable    Boolean
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  event WebhookEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt], map: "marketplace_event_processing_errors_event_idx")
+  @@map("marketplace_event_processing_errors")
+}
+
+/// Execução de rotina periódica: LISTINGS_RECONCILE | MISSED_FEEDS | ORDERS_RECOVERY.
+model SyncJob {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type           String
+  /// scheduler | manual | cron
+  trigger        String
+  /// RUNNING | COMPLETED | PARTIAL | FAILED
+  status         String    @default("RUNNING")
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
+  totalProcessed Int       @default(0) @map("total_processed")
+  totalChanged   Int       @default(0) @map("total_changed")
+  totalFailed    Int       @default(0) @map("total_failed")
+  details        Json?
+  errorMessage   String?   @map("error_message")
+
+  snapshots ListingSnapshot[]
+
+  @@index([type, startedAt(sort: Desc)], map: "marketplace_sync_jobs_type_started_idx")
+  @@map("marketplace_sync_jobs")
+}
+
+/// Histórico dos valores lidos no ML (gravado quando algo muda).
+model ListingSnapshot {
+  id                     BigInt    @id @default(autoincrement())
+  listingId              Int       @map("listing_id")
+  marketplaceItemId      String    @map("marketplace_item_id")
+  marketplaceStatus      String?   @map("marketplace_status")
+  marketplaceSubstatus   Json?     @map("marketplace_substatus")
+  marketplacePrice       Decimal?  @map("marketplace_price") @db.Decimal(14, 2)
+  marketplaceQuantity    Int?      @map("marketplace_quantity")
+  marketplaceLastUpdated DateTime? @map("marketplace_last_updated") @db.Timestamptz(3)
+  source                 String
+  eventId                BigInt?   @map("event_id")
+  syncJobId              String?   @map("sync_job_id") @db.Uuid
+  fetchedAt              DateTime  @default(now()) @map("fetched_at") @db.Timestamptz(3)
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  event   WebhookEvent?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  job     SyncJob?           @relation(fields: [syncJobId], references: [id], onDelete: SetNull)
+
+  @@index([listingId, fetchedAt(sort: Desc)], map: "marketplace_listing_snapshots_listing_idx")
+  @@map("marketplace_listing_snapshots")
+}
+
+/// Divergência entre o integrador e o ML. Única por (item, tipo) enquanto aberta (índice parcial na migration).
+model ReconciliationIssue {
+  id                BigInt    @id @default(autoincrement())
+  marketplaceItemId String    @map("marketplace_item_id")
+  listingId         Int?      @map("listing_id")
+  /// STATUS_DIVERGENCE | CLOSED_REMOTE | REMOVED_REMOTE | PRICE_DIVERGENCE | QUANTITY_DIVERGENCE | NOT_LINKED | INCOMPLETE_LINK | FETCH_ERROR
+  issueType         String    @map("issue_type")
+  localValue        String?   @map("local_value")
+  remoteValue       String?   @map("remote_value")
+  details           Json?
+  firstDetectedAt   DateTime  @default(now()) @map("first_detected_at") @db.Timestamptz(3)
+  lastDetectedAt    DateTime  @default(now()) @map("last_detected_at") @db.Timestamptz(3)
+  resolvedAt        DateTime? @map("resolved_at") @db.Timestamptz(3)
+  /// auto | acknowledged | superseded | linked
+  resolution        String?
+
+  listing MarketplaceListing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@map("marketplace_reconciliation_issues")
+}
+
+/// Pedido do Mercado Livre recebido para a futura integração com a ADS (nada é enviado nesta fase).
+model OrderInbox {
+  id                 BigInt    @id @default(autoincrement())
+  marketplaceOrderId String    @unique(map: "marketplace_order_inbox_order_key") @map("marketplace_order_id")
+  /// Um pack pode agrupar vários pedidos; não confundir com order_id.
+  packId             String?   @map("pack_id")
+  sellerId           String    @map("seller_id")
+  buyerId            String?   @map("buyer_id")
+  buyerNickname      String?   @map("buyer_nickname")
+  buyerFirstName     String?   @map("buyer_first_name")
+  buyerLastName      String?   @map("buyer_last_name")
+  orderStatus        String?   @map("order_status")
+  orderStatusDetail  String?   @map("order_status_detail")
+  paymentStatus      String?   @map("payment_status")
+  currencyId         String?   @map("currency_id")
+  productsAmount     Decimal?  @map("products_amount") @db.Decimal(14, 2)
+  discountAmount     Decimal?  @map("discount_amount") @db.Decimal(14, 2)
+  shippingAmount     Decimal?  @map("shipping_amount") @db.Decimal(14, 2)
+  totalAmount        Decimal?  @map("total_amount") @db.Decimal(14, 2)
+  paidAmount         Decimal?  @map("paid_amount") @db.Decimal(14, 2)
+  shipmentId         String?   @map("shipment_id")
+  tags               Json      @default("[]")
+  dateCreated        DateTime? @map("date_created") @db.Timestamptz(3)
+  dateClosed         DateTime? @map("date_closed") @db.Timestamptz(3)
+  mlLastUpdated      DateTime? @map("ml_last_updated") @db.Timestamptz(3)
+  /// PENDING | MAPPED | PARTIAL | UNMAPPED
+  mappingStatus      String    @default("PENDING") @map("mapping_status")
+  /// RECEIVED | PROCESSING | READY_FOR_MAPPING | READY_FOR_ADS | BLOCKED | ERROR (READY_FOR_ADS não significa enviado)
+  adsImportStatus    String    @default("RECEIVED") @map("ads_import_status")
+  adsStatusReason    String?   @map("ads_status_reason")
+  lastError          String?   @map("last_error")
+  receivedAt         DateTime  @default(now()) @map("received_at") @db.Timestamptz(3)
+  lastFetchedAt      DateTime? @map("last_fetched_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  items    OrderItem[]
+  payments OrderPayment[]
+  raw      OrderRaw?
+
+  @@index([packId], map: "marketplace_order_inbox_pack_idx")
+  @@index([adsImportStatus], map: "marketplace_order_inbox_ads_status_idx")
+  @@index([shipmentId], map: "marketplace_order_inbox_shipment_idx")
+  @@map("marketplace_order_inbox")
+}
+
+model OrderItem {
+  id                BigInt   @id @default(autoincrement())
+  orderId           BigInt   @map("order_id")
+  lineKey           String   @map("line_key")
+  marketplaceItemId String   @map("marketplace_item_id")
+  variationId       String?  @map("variation_id")
+  userProductId     String?  @map("user_product_id")
+  sellerSku         String?  @map("seller_sku")
+  title             String?
+  categoryId        String?  @map("category_id")
+  quantity          Decimal  @db.Decimal(14, 3)
+  unitPrice         Decimal? @map("unit_price") @db.Decimal(14, 2)
+  fullUnitPrice     Decimal? @map("full_unit_price") @db.Decimal(14, 2)
+  saleFee           Decimal? @map("sale_fee") @db.Decimal(14, 2)
+  currencyId        String?  @map("currency_id")
+  listingId         Int?     @map("listing_id")
+  productId         Int?     @map("product_id")
+  adsProductId      Int?     @map("ads_product_id")
+  /// MAPPED | UNMAPPED
+  mappingStatus     String   @map("mapping_status")
+  /// LISTING | USER_PRODUCT | SELLER_SKU | MANUAL
+  mappingMethod     String?  @map("mapping_method")
+
+  order   OrderInbox          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  listing MarketplaceListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  product Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([orderId, lineKey], map: "marketplace_order_items_line_key")
+  @@index([marketplaceItemId], map: "marketplace_order_items_item_idx")
+  @@map("marketplace_order_items")
+}
+
+model OrderPayment {
+  id                BigInt    @id @default(autoincrement())
+  orderId           BigInt    @map("order_id")
+  paymentId         String    @map("payment_id")
+  status            String?
+  statusDetail      String?   @map("status_detail")
+  paymentType       String?   @map("payment_type")
+  paymentMethodId   String?   @map("payment_method_id")
+  installments      Int?
+  transactionAmount Decimal?  @map("transaction_amount") @db.Decimal(14, 2)
+  totalPaidAmount   Decimal?  @map("total_paid_amount") @db.Decimal(14, 2)
+  shippingCost      Decimal?  @map("shipping_cost") @db.Decimal(14, 2)
+  couponAmount      Decimal?  @map("coupon_amount") @db.Decimal(14, 2)
+  dateCreated       DateTime? @map("date_created") @db.Timestamptz(3)
+  dateApproved      DateTime? @map("date_approved") @db.Timestamptz(3)
+  dateLastModified  DateTime? @map("date_last_modified") @db.Timestamptz(3)
+
+  order OrderInbox @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, paymentId], map: "marketplace_order_payments_key")
+  @@map("marketplace_order_payments")
+}
+
+/// Envio (somente leitura; sem endereço do destinatário nesta fase).
+model Shipment {
+  id                 BigInt    @id @default(autoincrement())
+  shipmentId         String    @unique(map: "marketplace_shipments_key") @map("shipment_id")
+  marketplaceOrderId String?   @map("marketplace_order_id")
+  status             String?
+  substatus          String?
+  logisticType       String?   @map("logistic_type")
+  mode               String?
+  trackingMethod     String?   @map("tracking_method")
+  dateCreated        DateTime? @map("date_created") @db.Timestamptz(3)
+  mlLastUpdated      DateTime? @map("ml_last_updated") @db.Timestamptz(3)
+  fetchedAt          DateTime  @default(now()) @map("fetched_at") @db.Timestamptz(3)
+
+  @@index([marketplaceOrderId], map: "marketplace_shipments_order_idx")
+  @@map("marketplace_shipments")
+}
+
+/// JSON original do pedido (dados pessoais): acesso restrito e retenção por expires_at.
+model OrderRaw {
+  orderId   BigInt   @id @map("order_id")
+  payload   Json
+  fetchedAt DateTime @default(now()) @map("fetched_at") @db.Timestamptz(3)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  order OrderInbox @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt], map: "marketplace_order_raw_expires_idx")
+  @@map("marketplace_order_raw")
 }

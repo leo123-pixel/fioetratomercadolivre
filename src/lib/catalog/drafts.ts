@@ -63,6 +63,17 @@ export interface ListingDraft {
   marketplaceItemId: string | null;
   permalink: string | null;
   listingStatus: string | null;
+  /** Dados lidos no Mercado Livre (fotografia remota; ver reconciliação). */
+  listingRemoteStatus: string | null;
+  listingRemoteSubStatus: string[] | null;
+  listingRemotePrice: string | null;
+  listingRemoteQuantity: number | null;
+  /** Preço/quantidade enviados na publicação. */
+  listingPublishedPrice: string | null;
+  listingPublishedQuantity: number | null;
+  listingLastSyncedAt: Date | null;
+  listingSyncError: string | null;
+  listingIssues: string[];
   primaryImageUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -90,6 +101,12 @@ const DRAFT_SELECT = `
          (SELECT sum(quantity)::text FROM product_stocks st WHERE st.product_id = d.product_id) AS "stockTotal",
          (SELECT count(*)::int FROM product_stocks st WHERE st.product_id = d.product_id) AS "stockBranches",
          ml.marketplace_item_id AS "marketplaceItemId", ml.permalink, ml.status AS "listingStatus",
+         ml.remote_status AS "listingRemoteStatus", ml.remote_sub_status AS "listingRemoteSubStatus",
+         ml.remote_price::text AS "listingRemotePrice", ml.remote_quantity AS "listingRemoteQuantity",
+         ml.price::text AS "listingPublishedPrice", ml.quantity AS "listingPublishedQuantity",
+         ml.last_synced_at AS "listingLastSyncedAt", ml.sync_error_message AS "listingSyncError",
+         COALESCE((SELECT array_agg(r.issue_type ORDER BY r.issue_type) FROM marketplace_reconciliation_issues r
+                   WHERE r.listing_id = ml.id AND r.resolved_at IS NULL), '{}') AS "listingIssues",
          (SELECT public_url FROM product_images i WHERE i.product_id = d.product_id ORDER BY i.is_primary DESC, i.position LIMIT 1) AS "primaryImageUrl",
          d.created_at AS "createdAt", d.updated_at AS "updatedAt"
   FROM listing_drafts d
@@ -113,20 +130,49 @@ export const DRAFT_TABS: Record<string, DraftStatus[]> = {
   prontos: ["READY", "VALIDATED"],
   publicando: ["VALIDATING", "PUBLISHING"],
   publicados: ["PUBLISHED"],
+  ativos: ["PUBLISHED"],
+  pausados: ["PUBLISHED"],
   encerrados: ["PUBLISHED"],
+  excluidos: ["PUBLISHED"],
+  divergencia: ["PUBLISHED"],
+  "erro-sync": ["PUBLISHED"],
   erros: ["FAILED"],
   desconhecidos: ["UNKNOWN"],
   arquivados: ["ARCHIVED"],
 };
 
 /** Abas que separam o anúncio vigente dos encerrados/excluídos no Mercado Livre. */
-export const TAB_LISTING: Record<string, "current" | "ended"> = { publicados: "current", encerrados: "ended" };
+export type ListingFilter = "current" | "ended" | "active" | "paused" | "closed" | "deleted" | "divergent" | "sync_error";
+export const TAB_LISTING: Record<string, ListingFilter> = {
+  publicados: "current",
+  ativos: "active",
+  pausados: "paused",
+  encerrados: "closed",
+  excluidos: "deleted",
+  divergencia: "divergent",
+  "erro-sync": "sync_error",
+};
 
-const ENDED_SQL = `('closed', 'deleted')`;
+/** Divergências que exigem atenção num anúncio vigente (encerrado/excluído têm abas próprias). */
+const DIVERGENT_SQL = `EXISTS (SELECT 1 FROM marketplace_reconciliation_issues r WHERE r.listing_id = ml.id AND r.resolved_at IS NULL
+  AND r.issue_type IN ('STATUS_DIVERGENCE', 'PRICE_DIVERGENCE', 'QUANTITY_DIVERGENCE', 'INCOMPLETE_LINK'))`;
+
+const LISTING_FILTER_SQL: Record<ListingFilter, string> = {
+  current: `(ml.status IS NULL OR ml.status NOT IN ('closed', 'deleted'))`,
+  ended: `ml.status IN ('closed', 'deleted')`,
+  active: `ml.status = 'active'`,
+  paused: `ml.status = 'paused'`,
+  closed: `ml.status = 'closed'`,
+  // "Excluídos ou indisponíveis": excluído no ML (sub_status deleted ou 404) e situações sem venda possível.
+  deleted: `ml.status IN ('deleted', 'inactive', 'under_review', 'payment_required')`,
+  divergent: DIVERGENT_SQL,
+  sync_error: `ml.sync_error_at IS NOT NULL`,
+};
+
 
 export async function listDrafts(
   sql: Sql,
-  opts: { status?: DraftStatus; statuses?: DraftStatus[]; listing?: "current" | "ended"; q?: string; page?: number; pageSize?: number } = {},
+  opts: { status?: DraftStatus; statuses?: DraftStatus[]; listing?: ListingFilter; q?: string; page?: number; pageSize?: number } = {},
 ) {
   const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
   const page = Math.max(opts.page ?? 1, 1);
@@ -137,8 +183,7 @@ export async function listDrafts(
     params.push(statuses);
     where.push(`d.status = ANY($${params.length}::text[])`);
   }
-  if (opts.listing === "ended") where.push(`ml.status IN ${ENDED_SQL}`);
-  if (opts.listing === "current") where.push(`(ml.status IS NULL OR ml.status NOT IN ${ENDED_SQL})`);
+  if (opts.listing) where.push(LISTING_FILTER_SQL[opts.listing]);
   if (opts.q?.trim()) {
     params.push(`%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
     where.push(`(COALESCE(p.name_custom, p.name_original) ILIKE $${params.length} OR d.title ILIKE $${params.length} OR p.ads_product_id::text = trim(both '%' from $${params.length}))`);
@@ -154,10 +199,20 @@ export async function listDrafts(
     params,
   );
   const counts = await sql.query<{ status: string; n: number }>(`SELECT status, count(*)::int AS n FROM listing_drafts GROUP BY status`);
-  const [{ ended }] = await sql.query<{ ended: number }>(
-    `SELECT count(*)::int AS ended FROM listing_drafts d ${LISTING_JOIN} WHERE d.status = 'PUBLISHED' AND ml.status IN ${ENDED_SQL}`,
+  const filters = Object.keys(LISTING_FILTER_SQL) as ListingFilter[];
+  const [listingRow] = await sql.query<Record<ListingFilter, number>>(
+    `SELECT ${filters.map((f) => `count(*) FILTER (WHERE ${LISTING_FILTER_SQL[f]})::int AS "${f}"`).join(", ")}
+     FROM listing_drafts d ${LISTING_JOIN} WHERE d.status = 'PUBLISHED'`,
   );
-  return { items, total, page, pageSize, endedPublished: ended, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    endedPublished: listingRow?.ended ?? 0,
+    listingCounts: listingRow ?? ({} as Record<ListingFilter, number>),
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number>,
+  };
 }
 
 export interface CreateDraftsResult {

@@ -276,3 +276,76 @@ Todas exigem sessão de administrador; as que alteram dados exigem mesma origem 
 5. Clique em **Revisar publicação**, confira conta, preço, quantidade, categoria e imagens, marque a confirmação e publique.
 6. Acompanhe o histórico: o ID `MLB…` e o permalink aparecem quando a API confirmar. Se aparecer **Resultado desconhecido**, aguarde a conciliação; não publique de novo.
 7. Abra o anúncio pelo permalink e confira. Para retirá-lo do ar, use o painel do Mercado Livre (esta fase não altera anúncios publicados).
+
+---
+
+## Fases 4 e 5 — Gestão de anúncios, webhooks, monitoramento e pedidos (somente leitura)
+
+Nada desta fase escreve no Mercado Livre nem na ADS. Webhooks e rotinas **só leem** a API autenticada e
+atualizam o banco local; a publicação manual da fase 3 continua igual e nunca é acionada por eventos.
+
+### Arquitetura
+
+```
+ML ──POST──► /api/webhooks/mercadolivre ── valida (schema, app_id, conta, tamanho, rate limit)
+                                         └─ INSERT marketplace_webhook_events (UNIQUE _id) ──► 200
+                                                          │ after()
+   pg_cron (Supabase, 5 min) ─► /api/marketplace/scheduler/tick ─┐
+   Vercel Cron (diário, CRON_SECRET) ─────────────────────────────┤
+   painel (tick atrasado > 10 min) ───────────────────────────────┘
+                                                          ▼
+   Raias com lease próprio:  anúncios (items, items_prices, user_products, user_products_families)
+                             pedidos (orders_v2)        envios (shipments)
+      claim (FOR UPDATE SKIP LOCKED + locked_until) → handler (GET na API) → COMPLETED/IGNORED
+      falha → RETRYING (backoff 30 s…1 h, Retry-After) → FAILED após N tentativas (dead-letter)
+   Rotinas: LISTINGS_RECONCILE (5 min) · ORDERS_RECOVERY (30 min) · MISSED_FEEDS (60 min)
+```
+
+- **Fila sem Redis**: o projeto não usa BullMQ/Redis; a fila é a própria tabela de eventos (mesmo padrão das filas de importação e publicação).
+- **Deduplicação/idempotência**: `_id` do ML é único; eventos do mesmo recurso recebidos antes de uma leitura bem-sucedida são marcados como atendidos por ela (`coalesced_into`); `last_updated` (item) e `date_last_updated` (pedido) impedem que leituras antigas sobrescrevam dados novos.
+- **Recuperação após reinício**: evento `PROCESSING` com `locked_until` vencido volta a ser processado; rotina `RUNNING` abandonada vira `FAILED` na execução seguinte.
+- **Agendamento independente de navegador**: o plano Hobby da Vercel só permite cron diário, então a migration instala (melhor esforço) `pg_cron` + `pg_net` no Supabase, chamando o tick a cada 5 minutos com URL/token que a aplicação grava em `app_settings.meli_scheduler`. A tela só consulta o banco local (`/api/marketplace/listings/changes`, a cada 60 s) e recarrega quando algo muda.
+
+### Banco (migration `20261107000000_marketplace_events_orders`, não destrutiva)
+
+| Tabela | Função |
+|---|---|
+| `marketplace_webhook_events` | Notificações (webhook, missed_feeds, internas) = fila; status `PENDING/PROCESSING/COMPLETED/FAILED/RETRYING/IGNORED` |
+| `marketplace_event_processing_errors` | Histórico de cada tentativa com erro |
+| `marketplace_sync_jobs` | Execuções das rotinas periódicas |
+| `marketplace_listing_snapshots` | Valores lidos no ML (gravados quando mudam) |
+| `marketplace_reconciliation_issues` | Divergências abertas/resolvidas (status, encerrado, removido, preço, quantidade, sem vínculo, vínculo incompleto, erro de consulta) |
+| `marketplace_order_inbox` / `_items` / `_payments` | Pedidos, itens com vínculo ao produto ADS (`LISTING`, `USER_PRODUCT`, `SELLER_SKU`, ou `UNMAPPED`) e pagamentos |
+| `marketplace_shipments` | Envios (sem endereço do destinatário) |
+| `marketplace_order_raw` | JSON original do pedido, acesso restrito e retenção (`ORDER_RAW_RETENTION_DAYS`) |
+| `marketplace_listings` + colunas `remote_*` | Fotografia remota ao lado do valor publicado; `status` local preservado, `remote_status`/`remote_sub_status` = original da API |
+
+### Endpoints
+
+| Método | Rota | Acesso | Função |
+|---|---|---|---|
+| POST | `/api/webhooks/mercadolivre` | público (validado) | **URL de notificações do DevCenter** |
+| POST | `/api/mercadolivre/notifications` | público (validado) | URL antiga, mesmo fluxo (compatibilidade) |
+| GET/POST | `/api/marketplace/scheduler/tick` | token interno ou `CRON_SECRET` | Ciclo do agendador |
+| GET | `/api/marketplace/monitoring` | admin | Indicadores de saúde |
+| GET · POST | `/api/marketplace/events` | admin (+ mesma origem) | Histórico · reprocessar todos com falha |
+| GET · POST | `/api/marketplace/events/:id` · `/reprocess` | admin (+ mesma origem) | Detalhe · reprocessamento autorizado |
+| GET · POST | `/api/marketplace/sync-jobs` | admin (+ mesma origem) | Execuções · rodar `LISTINGS_RECONCILE`/`MISSED_FEEDS`/`ORDERS_RECOVERY` agora |
+| GET · POST | `/api/marketplace/issues` · `/:id/resolve` | admin (+ mesma origem) | Divergências · marcar como ciente |
+| POST | `/api/marketplace/listings/sync` | admin + mesma origem | Reconciliação agora (reaproveitada) |
+| GET | `/api/orders` · `/api/orders/:id` | admin | Pedidos · detalhe |
+| GET | `/api/orders/:id/raw` | admin (10/min, acesso registrado) | JSON original |
+| POST | `/api/orders/:id/refresh` | admin + mesma origem | Releitura do pedido no ML |
+
+### Telas
+
+- `/anuncios`: indicadores (última sincronização, monitorados, eventos recebidos/pendentes/com erro, divergências) e abas Publicados, Ativos, Pausados, Encerrados, Excluídos ou indisponíveis, Com divergência, Erro de sincronização. Preço e quantidade mostram preparação, ADS e ML lado a lado.
+- `/configuracoes/integracoes/mercadolivre/monitoramento`: saúde (teste real `/users/me`), webhook, agendador, rotinas, divergências, histórico de eventos com tentativas e reprocessamento.
+- `/pedidos` e `/pedidos/:id`: pedidos com mapeamento e status de preparação para ADS (`RECEIVED`, `PROCESSING`, `READY_FOR_MAPPING`, `READY_FOR_ADS`, `BLOCKED`, `ERROR`). **A escrita na ADS não está habilitada.**
+
+### Configuração no Mercado Livre Developers (notificações)
+
+1. https://developers.mercadolivre.com.br/devcenter → *Fio e Trato - MELI* → **Editar**.
+2. **URL de retorno de notificações**: `https://fioetrato-ml.vercel.app/api/webhooks/mercadolivre` (não é o callback OAuth).
+3. **Tópicos**: marque `Items` (items), `Orders` (orders_v2), `Shipments` (shipments) e, para contas User Products, `User Products` (user_products) e `User Products Families` (user_products_families). Opcional: `Items prices`.
+4. Salve e confira em **Monitoramento → Status do webhook** a primeira notificação recebida.

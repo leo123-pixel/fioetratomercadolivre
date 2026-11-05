@@ -22,6 +22,18 @@ interface Row {
   marketplaceItemId: string | null;
   permalink: string | null;
   listingStatus: string | null;
+  listingRemoteStatus: string | null;
+  listingRemoteSubStatus: string[] | null;
+  listingRemotePrice: string | null;
+  listingRemoteQuantity: number | null;
+  listingPublishedPrice: string | null;
+  listingPublishedQuantity: number | null;
+  listingLastSyncedAt: string | null;
+  listingSyncError: string | null;
+  listingIssues: string[];
+  referencePrice: string | null;
+  stockTotal: string | null;
+  stockBranches: number;
   primaryImageUrl: string | null;
   lastError: string | null;
   updatedAt: string;
@@ -38,6 +50,15 @@ interface Job {
   marketplaceItemId: string | null;
   createdAt: string;
 }
+
+/** Divergências mostradas na lista (encerrado/excluído já aparecem como situação). */
+const ISSUE_LABEL: Record<string, string> = {
+  STATUS_DIVERGENCE: "status diverge",
+  PRICE_DIVERGENCE: "preço diverge",
+  QUANTITY_DIVERGENCE: "quantidade diverge",
+  INCOMPLETE_LINK: "vínculo incompleto",
+  FETCH_ERROR: "falha na consulta",
+};
 
 const LOCKED = ["VALIDATING", "PUBLISHING", "PUBLISHED", "UNKNOWN", "ARCHIVED"];
 
@@ -94,9 +115,9 @@ export function ListingsPanel(props: {
     setBusy("sync");
     setFeedback(null);
     try {
-      const r = await api<{ checked: number; changed: number }>("/api/marketplace/listings/sync", { body: {} });
+      const r = await api<{ checked: number; changed: number; failed: number; unlinked: number; divergent: number }>("/api/marketplace/listings/sync", { body: {} });
       if (!r.ok) return setFeedback({ kind: "error", text: errorText(r) });
-      setFeedback({ kind: "success", text: `${r.data.checked} anúncio(s) consultado(s) no Mercado Livre; ${r.data.changed} com status alterado.` });
+      setFeedback({ kind: "success", text: `${r.data.checked} anúncio(s) consultado(s) no Mercado Livre; ${r.data.changed} com status alterado; ${r.data.divergent} com divergência; ${r.data.failed} falha(s) de consulta; ${r.data.unlinked} anúncio(s) da conta sem vínculo local.` });
       router.refresh();
     } finally {
       setBusy(null);
@@ -219,9 +240,12 @@ export function ListingsPanel(props: {
       {props.account.connected && (
         <div className="toolbar">
           <button className="btn btn-secondary btn-sm" type="button" disabled={busy !== null} onClick={syncStatuses}>
-            {busy === "sync" ? "Consultando o Mercado Livre…" : "Atualizar status no Mercado Livre"}
+            {busy === "sync" ? "Consultando o Mercado Livre…" : "Reconciliar agora com o Mercado Livre"}
           </button>
-          <span className="muted">Lê no ML se cada anúncio publicado está ativo, pausado, encerrado ou excluído. Não altera nada no ML.</span>
+          <span className="muted">
+            A sincronização roda sozinha no servidor (notificações + conferência periódica). Este botão força uma leitura agora de status, preço e
+            quantidade. Não altera nada no ML.
+          </span>
         </div>
       )}
 
@@ -270,8 +294,8 @@ export function ListingsPanel(props: {
                 <th className="num">ID ADS</th>
                 <th>ID Mercado Livre</th>
                 <th>Categoria</th>
-                <th className="num">Preço</th>
-                <th className="num">Qtd.</th>
+                <th className="num" title="Preparação (rascunho) · ADS (referência) · Mercado Livre (lido na API)">Preço</th>
+                <th className="num" title="Preparação (rascunho) · ADS (estoque) · Mercado Livre (lido na API)">Qtd.</th>
                 <th>Situação</th>
                 <th>Atualizado</th>
                 <th>Ações</th>
@@ -312,8 +336,20 @@ export function ListingsPanel(props: {
                       )}
                     </td>
                     <td>{r.categoryName ?? r.marketplaceCategoryId ?? "—"}</td>
-                    <td className="num">{formatMoney(r.listingPrice)}</td>
-                    <td className="num">{r.listingQuantity ?? "—"}</td>
+                    <td className="num">
+                      {formatMoney(r.listingPrice)}
+                      {r.referencePrice && <small className="muted" style={{ display: "block" }}>ADS: {formatMoney(r.referencePrice)}</small>}
+                      {r.listingRemotePrice && (
+                        <small style={{ display: "block", color: r.listingIssues.includes("PRICE_DIVERGENCE") ? "var(--warn-fg)" : undefined }}>ML: {formatMoney(r.listingRemotePrice)}</small>
+                      )}
+                    </td>
+                    <td className="num">
+                      {r.listingQuantity ?? "—"}
+                      <small className="muted" style={{ display: "block" }}>ADS: {r.stockBranches ? r.stockTotal : "?"}</small>
+                      {r.listingRemoteQuantity !== null && r.listingRemoteQuantity !== undefined && (
+                        <small style={{ display: "block", color: r.listingIssues.includes("QUANTITY_DIVERGENCE") ? "var(--warn-fg)" : undefined }}>ML: {r.listingRemoteQuantity}</small>
+                      )}
+                    </td>
                     <td>
                       <span className={`chip ${s.tone}`}>{s.text}</span>
                       {r.listingStatus && r.status !== "PUBLISHED" && (
@@ -321,6 +357,23 @@ export function ListingsPanel(props: {
                           anterior: {listingStatusLabel(r.listingStatus).text}
                         </span>
                       )}
+                      {r.status === "PUBLISHED" && r.listingRemoteStatus && (
+                        <small className="muted" style={{ display: "block" }} title="Status original retornado pela API do Mercado Livre">
+                          API: {r.listingRemoteStatus}
+                          {r.listingRemoteSubStatus?.length ? ` (${r.listingRemoteSubStatus.join(", ")})` : ""}
+                        </small>
+                      )}
+                      {r.listingIssues.filter((i) => ISSUE_LABEL[i]).map((i) => (
+                        <span key={i} className="chip warn" style={{ marginLeft: 4 }}>
+                          {ISSUE_LABEL[i]}
+                        </span>
+                      ))}
+                      {r.listingSyncError && (
+                        <small style={{ display: "block", color: "var(--danger-fg)" }} title={r.listingSyncError}>
+                          Erro na última consulta ao ML
+                        </small>
+                      )}
+                      {r.listingLastSyncedAt && <small className="muted" style={{ display: "block" }}>lido em {formatDateTime(r.listingLastSyncedAt)}</small>}
                     </td>
                     <td>{formatDateTime(r.updatedAt)}</td>
                     <td>

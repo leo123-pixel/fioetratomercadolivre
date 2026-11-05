@@ -5,6 +5,11 @@ import { hashPassword } from "@/lib/auth/admin";
 import { setSchedulerForTesting } from "@/lib/imports/scheduler";
 import { setMeliThrottleForTests } from "@/lib/meli/api";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
+import { resetAlertsForTests } from "@/lib/marketplace/alerts";
+import { setRetrySleepForTesting } from "@/lib/marketplace/errors";
+import { resetSellerCacheForTests } from "@/lib/marketplace/events";
+import { setTickRunnerForTesting } from "@/lib/marketplace/scheduler";
+import { setWebhookProcessorForTesting } from "@/lib/marketplace/webhook";
 import { ADS_BASE, ADS_CNPJ, ADS_KEY, ADS_UA } from "./helpers/ads-mock";
 import { resetEnvCacheForTests } from "@/lib/env";
 import { setStoreForTesting } from "@/lib/store";
@@ -42,6 +47,11 @@ beforeEach(() => {
   setMeliThrottleForTests(0);
   resetRateLimitsForTests();
   setSchedulerForTesting(() => {}); // o worker é acionado explicitamente nos testes
+  setTickRunnerForTesting(() => {});
+  setWebhookProcessorForTesting(() => {});
+  setRetrySleepForTesting(async () => {});
+  resetSellerCacheForTests();
+  resetAlertsForTests();
   setStoreForTesting(new MemoryStore());
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
