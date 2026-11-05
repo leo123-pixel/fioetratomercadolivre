@@ -169,8 +169,8 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
     if (left() < 12_000) break;
     if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger, { deadline }));
   }
-  // Eventos gerados pelas rotinas (missed_feeds, pedidos recuperados) entram nesta execução se houver tempo.
-  if (left() > 10_000 && jobs.some((j) => j.changed > 0 && j.type !== "LISTINGS_RECONCILE")) {
+  // O tempo que sobrar vai para a fila (inclui eventos gerados pelas rotinas, como pedidos recuperados).
+  if (left() > 10_000) {
     const more = await processEvents({ sql, budgetMs: left() - 8_000 });
     events.processed += more.processed;
   }
