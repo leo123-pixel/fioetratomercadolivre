@@ -150,6 +150,10 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
   if (billing?.docNumber && (!customer || (customer.status !== "FOUND" && customer.status !== "CREATED") || !customer.adsClienteId)) {
     block("customer_not_identified", customer?.status === "AMBIGUOUS" ? "Mais de um cliente com o mesmo documento na ADS" : "Cliente não identificado na ADS (consulte ou cadastre)");
   }
+  // A ADS cadastra clientes vindos da API como inativos e a API não permite ativar: o operador ativa no ADSNET.
+  if (customer?.adsClienteId && customer.lastError === "Cliente inativo na ADS") {
+    warn("customer_inactive", `Cliente ${customer.adsClienteId} está INATIVO na ADS: ative no ADSNET (Clientes › Alterar) e clique em "Consultar cliente na ADS de novo" antes de enviar`);
+  }
 
   // Itens.
   const lines = await sql.query<{ lineKey: string; itemId: string; title: string | null; quantity: string; unitPrice: string | null; mapping: string; productId: number | null; adsProductId: number | null }>(

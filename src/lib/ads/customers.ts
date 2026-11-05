@@ -167,6 +167,8 @@ export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings
     await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", status: r.status, request: masked, response: r.data, durationMs: r.durationMs });
     if (r.status === 201 && typeof r.data?.clienteId === "number") {
       await upsertCustomer(sql, doc, "CREATED", { adsClienteId: r.data.clienteId });
+      // Relê o cadastro para saber a situação real (a ADS pode criar o cliente como inativo).
+      await lookupAdsCustomer(sql, doc, orderInboxId).catch(() => undefined);
       logger.info("Cliente cadastrado na ADS", { orderInboxId, clienteId: r.data.clienteId, environment: adsEnvironment().environment });
     } else if (r.status >= 500) {
       await upsertCustomer(sql, doc, "UNKNOWN", { lastError: `ADS respondeu ${r.status}; confirme com nova consulta antes de tentar de novo` });

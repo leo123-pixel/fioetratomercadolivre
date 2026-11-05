@@ -621,3 +621,14 @@ describe("operações comerciais", () => {
     expect(o.operacoes.map((x) => x.code)).toEqual(["001", "908"]);
   });
 });
+
+describe("cliente inativo na ADS", () => {
+  it("cliente criado/encontrado como inativo: aviso na validação (a API não permite ativar)", async () => {
+    const w = mockWorld();
+    const id = await readyOrder(w);
+    (w.clientes[0] as unknown as { inativo: boolean }).inativo = true;
+    await lookupAdsCustomer(t.sql(), CPF, id);
+    const built = await buildAdsOrder(t.sql(), id);
+    expect(built.issues).toContainEqual(expect.objectContaining({ code: "customer_inactive", blocking: false }));
+  });
+});
