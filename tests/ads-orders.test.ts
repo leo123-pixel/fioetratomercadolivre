@@ -687,3 +687,21 @@ describe("ADS momentaneamente indisponível", () => {
     expect(calls).toEqual(["POST pedidos"]);
   });
 });
+
+describe("ADS lenta", () => {
+  it("consulta que esgota o tempo não é repetida (evita estourar o limite da função)", async () => {
+    mockWorld();
+    useHomologation();
+    const { adsCall } = await import("@/lib/ads/client");
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls++;
+        throw Object.assign(new Error("aborted"), { name: "TimeoutError" });
+      }),
+    );
+    await expect(adsCall("GET", "prazos")).rejects.toMatchObject({ kind: "timeout" });
+    expect(calls).toBe(1);
+  });
+});

@@ -88,7 +88,7 @@ const norm = (s: string) =>
 export async function resolveIbge(city: string | null, uf: string | null): Promise<string | null> {
   if (!city || !uf || !/^[A-Z]{2}$/.test(uf)) return null;
   // 1) Cadastro de cidades da própria ADS (nome + UF).
-  const r = await adsCall<{ descricao?: string; uf?: string; codigoIbge?: string }[]>("GET", "cidades", { query: { uf } }).catch(() => null);
+  const r = await adsCall<{ descricao?: string; uf?: string; codigoIbge?: string }[]>("GET", "cidades", { query: { uf }, timeoutMs: 8_000 }).catch(() => null);
   if (r?.status === 200 && Array.isArray(r.data)) {
     const hits = r.data.filter((c) => c.descricao && norm(c.descricao) === norm(city) && (c.uf ?? uf).toUpperCase() === uf && /^\d{7}$/.test(String(c.codigoIbge ?? "")));
     if (hits.length === 1) return String(hits[0].codigoIbge);
@@ -106,7 +106,7 @@ async function ibgeMunicipalities(uf: string): Promise<{ id: number; nome: strin
   const cached = ibgeCache.get(uf);
   if (cached && Date.now() - cached.at < 24 * 3_600_000) return cached.list;
   try {
-    const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`, { signal: AbortSignal.timeout(10_000), cache: "no-store" });
+    const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`, { signal: AbortSignal.timeout(6_000), cache: "no-store" });
     if (!res.ok) return [];
     const data = (await res.json()) as { id?: number; nome?: string }[];
     const list = (Array.isArray(data) ? data : []).filter((m) => typeof m.id === "number" && /^\d{7}$/.test(String(m.id)) && typeof m.nome === "string") as { id: number; nome: string }[];

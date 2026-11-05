@@ -201,30 +201,35 @@ export async function adsCall<T = unknown>(
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const started = Date.now();
   let res: Response;
-  // Leituras (GET) são repetidas em indisponibilidade momentânea da ADS (429/502/503/504, rede).
-  // Escritas (POST) NUNCA são repetidas aqui: o resultado incerto é tratado por quem chama.
-  const maxAttempts = method === "GET" ? 3 : 1;
+  // Leituras (GET): no máximo 10 s cada e repetidas só quando a ADS responde RÁPIDO com indisponibilidade
+  // (429/502/503/504) ou a conexão cai na hora; um tempo esgotado não é repetido (somaria minutos e
+  // estouraria o limite da função). Escritas (POST) NUNCA são repetidas aqui.
+  const isGet = method === "GET";
+  const timeoutMs = opts.timeoutMs ?? (isGet ? Math.min(env.timeoutMs, 10_000) : env.timeoutMs);
+  const maxAttempts = isGet ? 3 : 1;
+  const budgetEnd = started + (isGet ? 15_000 : timeoutMs);
   for (let attempt = 1; ; attempt++) {
     try {
       res = await (adsFetchOverride ?? fetch)(url, {
         method,
         headers,
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? env.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         cache: "no-store",
       });
     } catch (err) {
       const name = (err as Error)?.name;
       const kind = name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
-      if (attempt < maxAttempts) {
-        await retrySleep(1_000 * attempt);
+      if (kind === "network" && attempt < maxAttempts && Date.now() + 1_000 < budgetEnd) {
+        await retrySleep(1_000);
         continue;
       }
-      throw new AdsApiError(kind, kind === "timeout" ? `Tempo esgotado em ${method} /${resource}` : `Falha de rede em ${method} /${resource}`);
+      throw new AdsApiError(kind, kind === "timeout" ? `ADS não respondeu em ${Math.round(timeoutMs / 1000)} s (${method} /${resource})` : `Falha de rede em ${method} /${resource}`);
     }
-    if (attempt < maxAttempts && [429, 502, 503, 504].includes(res.status)) {
+    const wait = Math.min(retryAfterMs(res) ?? 1_000 * attempt, 3_000);
+    if (attempt < maxAttempts && [429, 502, 503, 504].includes(res.status) && Date.now() + wait < budgetEnd) {
       await res.text().catch(() => "");
-      await retrySleep(Math.min(retryAfterMs(res) ?? 1_500 * attempt, 5_000));
+      await retrySleep(wait);
       continue;
     }
     break;
