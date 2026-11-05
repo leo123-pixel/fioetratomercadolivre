@@ -71,6 +71,15 @@ export async function handleMeliWebhook(req: NextRequest): Promise<NextResponse>
       logger.warn("Notificação do Mercado Livre recusada", { requestId, reason: r.reason });
       return fail(r.httpStatus, r.reason);
     }
+    const topic = typeof (body as { topic?: unknown })?.topic === "string" ? String((body as { topic: string }).topic).slice(0, 60) : null;
+    logger.info("Notificação do Mercado Livre recebida", {
+      requestId,
+      topic,
+      outcome: r.outcome,
+      eventId: r.id,
+      status: r.outcome === "stored" ? r.status : "DUPLICATE",
+      reason: r.outcome === "stored" ? (r.reason ?? null) : null,
+    });
     if (r.outcome === "stored" && r.lane) processor(r.lane);
     return ok();
   } catch (err) {
