@@ -39,6 +39,8 @@ interface Settings {
   dueDateBase: "payment_approved" | "order_date";
   customerSetorId: string | null;
   customerClasseId: string | null;
+  customerDefaultPhone: string | null;
+  customerDefaultEmail: string | null;
 }
 
 const EMPTY: Settings = {
@@ -55,6 +57,8 @@ const EMPTY: Settings = {
   dueDateBase: "payment_approved",
   customerSetorId: null,
   customerClasseId: null,
+  customerDefaultPhone: null,
+  customerDefaultEmail: null,
 };
 
 function Select(props: { label: string; value: string | null; options: Option[]; onChange: (v: string) => void; optional?: boolean; hint?: string; error?: string }) {
@@ -99,7 +103,7 @@ export function CommercialSettingsForm() {
     setBusy(true);
     setMsg(null);
     setErrors({});
-    const r = await api<{ settings: Settings }>("/api/ads/order-settings", { method: "PUT", body: { ...form, representanteId: form.representanteId || null, customerSetorId: form.customerSetorId || null, customerClasseId: form.customerClasseId || null } });
+    const r = await api<{ settings: Settings }>("/api/ads/order-settings", { method: "PUT", body: { ...form, representanteId: form.representanteId || null, customerSetorId: form.customerSetorId || null, customerClasseId: form.customerClasseId || null, customerDefaultPhone: form.customerDefaultPhone?.replace(/\D/g, "") || null, customerDefaultEmail: form.customerDefaultEmail?.trim() || null } });
     setBusy(false);
     if (!r.ok) {
       setErrors(Object.fromEntries((r.data.issues ?? []).map((i) => [i.path, i.message])));
@@ -203,6 +207,18 @@ export function CommercialSettingsForm() {
             </div>
           )}
           <Select label="Classe (classeId)" value={form.customerClasseId} options={options.classes} onChange={(v) => set("customerClasseId", v || null)} optional error={errors.customerClasseId} />
+          <div className="field">
+            <label>Telefone padrão da loja</label>
+            <input value={form.customerDefaultPhone ?? ""} inputMode="tel" maxLength={15} placeholder="DDD + número" onChange={(e) => set("customerDefaultPhone", e.target.value || null)} />
+            <small className="hint">A ADS exige telefone e o Mercado Livre não informa o do comprador: use o telefone de contato da loja. Fica registrado no cadastro.</small>
+            {errors.customerDefaultPhone && <small className="hint" style={{ color: "var(--danger-fg)" }}>{errors.customerDefaultPhone}</small>}
+          </div>
+          <div className="field">
+            <label>E-mail padrão da loja (opcional)</label>
+            <input type="email" value={form.customerDefaultEmail ?? ""} maxLength={120} onChange={(e) => set("customerDefaultEmail", e.target.value || null)} />
+            <small className="hint">Usado se a ADS exigir e-mail (o ML também não informa o do comprador).</small>
+            {errors.customerDefaultEmail && <small className="hint" style={{ color: "var(--danger-fg)" }}>{errors.customerDefaultEmail}</small>}
+          </div>
         </div>
       </section>
       {msg && <div className={`alert ${msg.kind}`}>{msg.text}</div>}

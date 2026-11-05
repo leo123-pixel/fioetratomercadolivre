@@ -17,6 +17,9 @@ export interface BillingAddress {
   city: string | null;
   state: string | null;
   zip: string | null;
+  /** Telefone/e-mail do comprador, só se o ML informar (normalmente não informa). */
+  phone?: string | null;
+  email?: string | null;
 }
 
 export interface BillingData {
@@ -63,6 +66,19 @@ export function validDocument(doc: string | null): boolean {
   return doc.length === 11 ? cpfValid(doc) : doc.length === 14 ? cnpjValid(doc) : false;
 }
 
+/** Telefone só com 10 ou 11 dígitos (DDD + número); números mascarados pelo ML são descartados. */
+function phoneOf(v: unknown): string | null {
+  const o = v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  const d = o ? digits(`${o.area_code ?? ""}${o.number ?? ""}`) : digits(v);
+  const local = d.startsWith("55") && d.length > 11 ? d.slice(2) : d;
+  return local.length === 10 || local.length === 11 ? local : null;
+}
+
+function emailOf(v: unknown): string | null {
+  const t = typeof v === "string" ? v.trim() : "";
+  return /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(t) ? t.toLowerCase() : null;
+}
+
 /** Interpreta a resposta do novo endpoint (buyer.billing_info) e a do legado (billing_info + additional_info). */
 export function parseBillingInfo(body: unknown, billingInfoId: string | null): BillingData {
   const root = (body ?? {}) as Record<string, unknown>;
@@ -96,6 +112,8 @@ export function parseBillingInfo(body: unknown, billingInfoId: string | null): B
       city: str(addr.city_name ?? addr.city ?? extra.CITY_NAME, 80),
       state: str(addr.state_code ?? addr.state ?? extra.STATE_CODE ?? extra.STATE_NAME, 30)?.replace(/^BR-/, "") ?? null,
       zip: digits(addr.zip_code ?? extra.ZIP_CODE) || null,
+      phone: phoneOf(bi.phone ?? extra.PHONE),
+      email: emailOf(bi.email ?? extra.EMAIL),
     },
   };
 }

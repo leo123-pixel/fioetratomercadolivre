@@ -34,6 +34,8 @@ const SETTINGS: AdsOrderSettings = {
   dueDateBase: "payment_approved",
   customerSetorId: "01",
   customerClasseId: "02",
+  customerDefaultPhone: "4133334444",
+  customerDefaultEmail: null,
 };
 
 type AdsPost = { path: string; body: unknown };
@@ -227,7 +229,8 @@ describe("cliente na ADS", () => {
     const c = await createAdsCustomer(t.sql(), id, SETTINGS, "admin:test");
     expect(c).toMatchObject({ status: "CREATED", adsClienteId: 500 });
     const post = w.adsPosts.find((p) => p.path === "clientes")!.body as Record<string, unknown>;
-    expect(post).toMatchObject({ cnpjCpf: CPF, setorId: "01", classeId: "02", endereco: { codigoIbge: "3550308", cep: "01001000", uf: "SP" } });
+    expect(post).toMatchObject({ cnpjCpf: CPF, setorId: "01", classeId: "02", telefone: "4133334444", endereco: { codigoIbge: "3550308", cep: "01001000", uf: "SP" } });
+    expect(String(post.observacao)).toContain("Telefone/e-mail da loja");
     await createAdsCustomer(t.sql(), id, SETTINGS, "admin:test");
     expect(w.adsPosts.filter((p) => p.path === "clientes")).toHaveLength(1);
   });
@@ -503,5 +506,30 @@ describe("setor do cliente (sem rota própria na ADS)", () => {
     expect(JSON.stringify(o)).not.toMatch(/CLIENTE PESSOA REAL|11222333000181/);
     await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerSetorId: "681" })).rejects.toMatchObject({ issues: [{ field: "customerSetorId" }] });
     await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerSetorId: "10" })).resolves.toMatchObject({ customerSetorId: "10" });
+  });
+});
+
+describe("telefone do cliente (ADS exige; ML não informa)", () => {
+  it("sem telefone do comprador e sem telefone padrão: cadastro bloqueado antes de chamar a ADS", async () => {
+    const w = mockWorld();
+    useHomologation();
+    const id = await readyOrder(w);
+    w.clientes.length = 0;
+    await lookupAdsCustomer(t.sql(), CPF, id);
+    await expect(createAdsCustomer(t.sql(), id, { ...SETTINGS, customerDefaultPhone: null }, "admin:test")).rejects.toMatchObject({ code: "incomplete" });
+    expect(w.adsPosts).toHaveLength(0);
+  });
+
+  it("telefone do comprador, quando o ML informa, tem prioridade; número mascarado é descartado", () => {
+    const real = parseBillingInfo({ buyer: { billing_info: { identification: { type: "CPF", number: CPF }, phone: { area_code: "41", number: "99998888" } } } }, null);
+    expect(real.address.phone).toBe("4199998888");
+    const masked = parseBillingInfo({ buyer: { billing_info: { identification: { type: "CPF", number: CPF }, phone: { area_code: "XX", number: "XXXXXXX" } } } }, null);
+    expect(masked.address.phone).toBeNull();
+  });
+
+  it("telefone padrão inválido é recusado na configuração", async () => {
+    mockWorld();
+    await seedProduct(1804);
+    await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerDefaultPhone: "123" })).rejects.toMatchObject({ issues: [{ field: "customerDefaultPhone" }] });
   });
 });

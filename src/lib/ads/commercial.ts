@@ -33,6 +33,10 @@ export const adsOrderSettingsSchema = z.object({
   /** Padrões para cadastro de cliente novo na ADS. */
   customerSetorId: z.string().trim().max(10).nullable(),
   customerClasseId: z.string().trim().max(10).nullable(),
+  /** Telefone de contato da LOJA usado no cadastro quando o ML não informa o do comprador (DDD + número). */
+  customerDefaultPhone: z.string().trim().regex(/^\d{10,11}$/, "Telefone com DDD, só números (10 ou 11 dígitos)").nullable().optional().default(null),
+  /** E-mail de contato da LOJA usado no cadastro quando o ML não informa o do comprador. */
+  customerDefaultEmail: z.string().trim().email("E-mail inválido").max(120).nullable().optional().default(null),
 });
 export type AdsOrderSettings = z.infer<typeof adsOrderSettingsSchema>;
 

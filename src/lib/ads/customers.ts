@@ -99,6 +99,11 @@ export async function buildCustomerDraft(billing: StoredBilling, settings: AdsOr
   if (!settings?.customerSetorId) missing.push("config.setorId");
   if (!settings?.customerClasseId) missing.push("config.classeId");
   const a = billing.address;
+  // O ML normalmente não informa telefone/e-mail do comprador: usa o contato da LOJA, se configurado.
+  const phone = a.phone ?? settings?.customerDefaultPhone ?? null;
+  const email = a.email ?? settings?.customerDefaultEmail ?? null;
+  const storeContact = !a.phone && !!settings?.customerDefaultPhone;
+  if (!phone) missing.push("telefone (configure o telefone padrão da loja)");
   const ibge = await resolveIbge(a.city, a.state).catch(() => null);
   if (!ibge) missing.push("endereco.codigoIbge");
   const request: Record<string, unknown> = {
@@ -111,7 +116,9 @@ export async function buildCustomerDraft(billing: StoredBilling, settings: AdsOr
     prazoId: settings?.prazoId ?? null,
     formaDePagamentoId: settings?.formaDePagamentoId ?? null,
     representanteId: settings?.representanteId ?? null,
-    observacao: "Cliente Mercado Livre (integrador)",
+    telefone: phone,
+    email,
+    observacao: storeContact ? "Cliente Mercado Livre (integrador). Telefone/e-mail da loja: o ML não informa o do comprador" : "Cliente Mercado Livre (integrador)",
     endereco: { cep: a.zip, numero: a.number, rua: a.street, uf: a.state, complemento: a.complement, bairro: a.neighborhood, codigoIbge: ibge },
     contato: { nome: billing.name?.slice(0, 60) ?? null },
   };
