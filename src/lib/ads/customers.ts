@@ -2,7 +2,7 @@ import "server-only";
 import { logger, redactString } from "../logger";
 import { getOrderBilling, maskDocument, type StoredBilling } from "../marketplace/billing";
 import type { Sql } from "../sql";
-import { adsCall, AdsApiError, assertAdsWriteAllowed } from "./client";
+import { adsCall, AdsApiError, adsEnvironment, assertAdsWriteAllowed } from "./client";
 import type { AdsOrderSettings } from "./commercial";
 
 /**
@@ -10,7 +10,8 @@ import type { AdsOrderSettings } from "./commercial";
  * - Consulta GET /clientes?cnpjcpf=... (somente leitura) e grava o vínculo em ads_customers.
  * - Sem cliente: monta o cadastro (POST /clientes) para aprovação manual; nada é inventado — campo
  *   ausente bloqueia o cadastro. Antes de cadastrar, consulta de novo (evita duplicidade).
- * - O cadastro só é feito em homologação, com confirmação explícita do administrador.
+ * - Tudo é separado por ambiente (homologação × produção): o clienteId de um não vale no outro.
+ * - O cadastro exige confirmação explícita do administrador e escrita liberada no ambiente.
  */
 export type CustomerStatus = "FOUND" | "NOT_FOUND" | "AMBIGUOUS" | "CREATING" | "CREATED" | "UNKNOWN" | "ERROR";
 
@@ -25,29 +26,29 @@ export interface AdsCustomer {
 
 async function logAttempt(sql: Sql, orderInboxId: string | null, a: { operation: string; status?: number | null; request?: unknown; response?: unknown; error?: string | null; durationMs?: number | null }) {
   await sql.execute(
-    `INSERT INTO ads_order_attempts (order_id, operation, http_status, request, response, error, duration_ms)
-     VALUES ($1::bigint, $2::text, $3::int, $4::jsonb, $5::jsonb, $6::text, $7::int)`,
-    [orderInboxId, a.operation, a.status ?? null, a.request === undefined ? null : JSON.stringify(a.request), a.response === undefined ? null : JSON.stringify(a.response), a.error ?? null, a.durationMs ?? null],
+    `INSERT INTO ads_order_attempts (order_id, operation, http_status, request, response, error, duration_ms, environment)
+     VALUES ($1::bigint, $2::text, $3::int, $4::jsonb, $5::jsonb, $6::text, $7::int, $8::text)`,
+    [orderInboxId, a.operation, a.status ?? null, a.request === undefined ? null : JSON.stringify(a.request), a.response === undefined ? null : JSON.stringify(a.response), a.error ?? null, a.durationMs ?? null, adsEnvironment().environment],
   );
 }
 
 export async function getAdsCustomer(sql: Sql, cnpjCpf: string): Promise<AdsCustomer | null> {
   const [c] = await sql.query<AdsCustomer>(
     `SELECT cnpj_cpf AS "cnpjCpf", ads_cliente_id AS "adsClienteId", status, draft, last_error AS "lastError", checked_at AS "checkedAt"
-     FROM ads_customers WHERE cnpj_cpf = $1::text`,
-    [cnpjCpf],
+     FROM ads_customers WHERE cnpj_cpf = $1::text AND environment = $2::text`,
+    [cnpjCpf, adsEnvironment().environment],
   );
   return c ?? null;
 }
 
 async function upsertCustomer(sql: Sql, cnpjCpf: string, status: CustomerStatus, f: { adsClienteId?: number | null; draft?: unknown; lastError?: string | null; createdBy?: string | null } = {}) {
   await sql.execute(
-    `INSERT INTO ads_customers (cnpj_cpf, ads_cliente_id, status, draft, last_error, created_by, checked_at, updated_at)
-     VALUES ($1::text, $2::int, $3::text, $4::jsonb, $5::text, $6::text, now(), now())
-     ON CONFLICT (cnpj_cpf) DO UPDATE SET ads_cliente_id = COALESCE(EXCLUDED.ads_cliente_id, ads_customers.ads_cliente_id), status = EXCLUDED.status,
+    `INSERT INTO ads_customers (cnpj_cpf, ads_cliente_id, status, draft, last_error, created_by, checked_at, updated_at, environment)
+     VALUES ($1::text, $2::int, $3::text, $4::jsonb, $5::text, $6::text, now(), now(), $7::text)
+     ON CONFLICT (environment, cnpj_cpf) DO UPDATE SET ads_cliente_id = COALESCE(EXCLUDED.ads_cliente_id, ads_customers.ads_cliente_id), status = EXCLUDED.status,
        draft = COALESCE(EXCLUDED.draft, ads_customers.draft), last_error = EXCLUDED.last_error,
        created_by = COALESCE(EXCLUDED.created_by, ads_customers.created_by), checked_at = now(), updated_at = now()`,
-    [cnpjCpf, f.adsClienteId ?? null, status, f.draft === undefined ? null : JSON.stringify(f.draft), f.lastError ?? null, f.createdBy ?? null],
+    [cnpjCpf, f.adsClienteId ?? null, status, f.draft === undefined ? null : JSON.stringify(f.draft), f.lastError ?? null, f.createdBy ?? null, adsEnvironment().environment],
   );
 }
 
@@ -156,8 +157,8 @@ export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings
   }
   const claimed = await sql.execute(
     `UPDATE ads_customers SET status = 'CREATING', draft = $2::jsonb, created_by = $3::text, updated_at = now()
-     WHERE cnpj_cpf = $1::text AND status = 'NOT_FOUND'`,
-    [doc, JSON.stringify(draft.request), by],
+     WHERE cnpj_cpf = $1::text AND status = 'NOT_FOUND' AND environment = $4::text`,
+    [doc, JSON.stringify(draft.request), by, adsEnvironment().environment],
   );
   if (!claimed) throw new CustomerError("busy", "Cadastro já em andamento para este documento");
   const masked = { ...draft.request, cnpjCpf: maskDocument(doc) };
@@ -166,7 +167,7 @@ export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings
     await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", status: r.status, request: masked, response: r.data, durationMs: r.durationMs });
     if (r.status === 201 && typeof r.data?.clienteId === "number") {
       await upsertCustomer(sql, doc, "CREATED", { adsClienteId: r.data.clienteId });
-      logger.info("Cliente cadastrado na ADS (homologação)", { orderInboxId, clienteId: r.data.clienteId });
+      logger.info("Cliente cadastrado na ADS", { orderInboxId, clienteId: r.data.clienteId, environment: adsEnvironment().environment });
     } else if (r.status >= 500) {
       await upsertCustomer(sql, doc, "UNKNOWN", { lastError: `ADS respondeu ${r.status}; confirme com nova consulta antes de tentar de novo` });
     } else {

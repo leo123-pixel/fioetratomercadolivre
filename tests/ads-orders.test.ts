@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { GET as adsStateRoute, POST as adsActionRoute } from "@/app/api/orders/[id]/ads/route";
 import { POST as mappingsRoute } from "@/app/api/mappings/route";
 import { AdsWriteBlockedError } from "@/lib/ads/client";
-import { saveAdsOrderSettings, SETTINGS_KEY, type AdsOrderSettings } from "@/lib/ads/commercial";
+import { saveAdsOrderSettings, settingsKey, type AdsOrderSettings } from "@/lib/ads/commercial";
 import { createAdsCustomer, lookupAdsCustomer } from "@/lib/ads/customers";
 import { buildAdsOrder, externalIdFor } from "@/lib/ads/order-payload";
 import { reconcileSubmission, refreshAdsStatus, sendOrderToAds } from "@/lib/ads/order-submission";
@@ -160,7 +160,7 @@ async function seedPublishedListing(itemId: string, ads: number) {
 }
 
 async function saveSettings(s: AdsOrderSettings = SETTINGS) {
-  await t.sql().execute(`INSERT INTO app_settings (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [SETTINGS_KEY, JSON.stringify(s)]);
+  await t.sql().execute(`INSERT INTO app_settings (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [settingsKey(), JSON.stringify(s)]);
 }
 
 /** Pedido pago, item mapeado, comprador identificado na ADS: pronto para enviar. */
@@ -531,5 +531,70 @@ describe("telefone do cliente (ADS exige; ML não informa)", () => {
     mockWorld();
     await seedProduct(1804);
     await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerDefaultPhone: "123" })).rejects.toMatchObject({ issues: [{ field: "customerDefaultPhone" }] });
+  });
+});
+
+describe("produção: trava explícita e separação por ambiente", () => {
+  const PROD = "https://adsapi.com.br";
+
+  it("produção sem ADS_PRODUCTION_WRITE_ENABLED: bloqueada; com a variável: envia e registra o ambiente", async () => {
+    const w = mockWorld();
+    process.env.ADS_API_BASE_URL = PROD;
+    const id = await readyOrder(w);
+    const hash = (await buildAdsOrder(t.sql(), id)).payloadHash!;
+    await expect(sendOrderToAds(t.sql(), id, { payloadHash: hash, requestedBy: "admin:test" })).rejects.toBeInstanceOf(AdsWriteBlockedError);
+    process.env.ADS_PRODUCTION_WRITE_ENABLED = "true";
+    try {
+      const sub = await sendOrderToAds(t.sql(), id, { payloadHash: hash, requestedBy: "admin:test" });
+      expect(sub).toMatchObject({ status: "SENT", environment: "producao" });
+    } finally {
+      delete process.env.ADS_PRODUCTION_WRITE_ENABLED;
+    }
+  });
+
+  it("produção exige a confirmação reforçada ENVIAR PRODUCAO", async () => {
+    const w = mockWorld();
+    process.env.ADS_API_BASE_URL = PROD;
+    process.env.ADS_PRODUCTION_WRITE_ENABLED = "true";
+    try {
+      const id = await readyOrder(w);
+      const hash = (await buildAdsOrder(t.sql(), id)).payloadHash!;
+      const call = (confirm: string) =>
+        adsActionRoute(makeRequest(`/api/orders/${id}/ads`, { method: "POST", cookies: adminCookies(), headers: { origin: BASE }, body: { action: "send", confirm, payloadHash: hash } }), ctx({ id }));
+      expect((await call("ENVIAR")).status).toBe(400);
+      expect(w.adsPosts).toHaveLength(0);
+      expect((await call("ENVIAR PRODUCAO")).status).toBe(200);
+      expect(w.adsPosts.filter((x) => x.path === "pedidos")).toHaveLength(1);
+    } finally {
+      delete process.env.ADS_PRODUCTION_WRITE_ENABLED;
+    }
+  });
+
+  it("o que foi feito na homologação não vale na produção: cliente, configuração e envio são separados", async () => {
+    const w = mockWorld();
+    useHomologation();
+    const id = await readyOrder(w);
+    const sent = await sendOrderToAds(t.sql(), id, { payloadHash: (await buildAdsOrder(t.sql(), id)).payloadHash!, requestedBy: "admin:test" });
+    expect(sent).toMatchObject({ status: "SENT", environment: "homologacao" });
+
+    process.env.ADS_API_BASE_URL = PROD;
+    const before = await buildAdsOrder(t.sql(), id);
+    // Sem configuração validada na produção e sem cliente identificado na produção: bloqueado.
+    expect(before.issues.map((i) => i.code)).toEqual(expect.arrayContaining(["settings_missing", "customer_not_identified"]));
+    expect(before.customer).toBeNull();
+
+    process.env.ADS_PRODUCTION_WRITE_ENABLED = "true";
+    try {
+      await saveSettings();
+      await lookupAdsCustomer(t.sql(), CPF, id);
+      const after = await buildAdsOrder(t.sql(), id);
+      expect(after.ok).toBe(true);
+      // O envio da homologação não impede (nem é confundido com) o envio da produção.
+      const prodSub = await sendOrderToAds(t.sql(), id, { payloadHash: after.payloadHash!, requestedBy: "admin:test" });
+      expect(prodSub).toMatchObject({ status: "SENT", environment: "producao" });
+      expect(prodSub.id).not.toBe(sent.id);
+    } finally {
+      delete process.env.ADS_PRODUCTION_WRITE_ENABLED;
+    }
   });
 });

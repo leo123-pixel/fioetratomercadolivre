@@ -9,6 +9,10 @@ import { getAdsEnv } from "./env";
  * e são validados contra ela ao salvar — nada de identificadores fictícios.
  */
 export const SETTINGS_KEY = "ads_order_settings";
+/** A configuração é guardada por ambiente: códigos validados na homologação não valem na produção. */
+export function settingsKey(environment: string = adsEnvironment().environment): string {
+  return `${SETTINGS_KEY}:${environment}`;
+}
 
 export const adsOrderSettingsSchema = z.object({
   /** Operação comercial (rota operacoes, campo codigo). */
@@ -41,7 +45,7 @@ export const adsOrderSettingsSchema = z.object({
 export type AdsOrderSettings = z.infer<typeof adsOrderSettingsSchema>;
 
 export async function getAdsOrderSettings(sql: Sql): Promise<AdsOrderSettings | null> {
-  const [row] = await sql.query<{ value: unknown }>(`SELECT value FROM app_settings WHERE key = $1`, [SETTINGS_KEY]);
+  const [row] = await sql.query<{ value: unknown }>(`SELECT value FROM app_settings WHERE key = $1`, [settingsKey()]);
   const parsed = adsOrderSettingsSchema.safeParse(row?.value);
   return parsed.success ? parsed.data : null;
 }
@@ -195,7 +199,7 @@ export async function saveAdsOrderSettings(sql: Sql, input: unknown): Promise<Ad
   await sql.execute(
     `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-    [SETTINGS_KEY, JSON.stringify(v)],
+    [settingsKey(o.environment.environment), JSON.stringify(v)],
   );
   return v;
 }

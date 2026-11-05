@@ -120,7 +120,12 @@ export function CommercialSettingsForm() {
     <>
       <div className={`alert ${options.environment.writeAllowed ? "warn" : "error"}`}>
         ADS: <strong>{options.environment.host}</strong> ({options.environment.environment}) · CNPJ distribuidora {options.cnpjDistribuidora} ·{" "}
-        {options.environment.writeAllowed ? "envio de pedidos permitido (homologação)" : "envio de pedidos BLOQUEADO neste ambiente"}
+        {options.environment.writeAllowed
+          ? options.environment.environment === "producao"
+            ? "envio de pedidos para PRODUÇÃO habilitado"
+            : "envio de pedidos permitido (testes)"
+          : "envio de pedidos BLOQUEADO neste ambiente"}
+        . A configuração é salva separadamente para cada ambiente.
       </div>
       {Object.keys(options.errors).length > 0 && (
         <div className="alert error">

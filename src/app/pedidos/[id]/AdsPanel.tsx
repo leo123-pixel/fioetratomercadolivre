@@ -36,7 +36,7 @@ interface State {
 
 const CUSTOMER_LABEL: Record<string, string> = {
   FOUND: "Encontrado na ADS",
-  CREATED: "Cadastrado na ADS (homologação)",
+  CREATED: "Cadastrado na ADS pelo integrador",
   NOT_FOUND: "Não existe na ADS",
   AMBIGUOUS: "Duplicado na ADS",
   CREATING: "Cadastro em andamento",
@@ -89,15 +89,24 @@ export function AdsPanel({ id }: { id: string }) {
   if (!s) return <div className="card">Carregando integração ADS…</div>;
   const active = s.submissions.find((x) => ["SENDING", "SENT", "UNKNOWN"].includes(x.status));
   const blocking = s.validation.issues.filter((i) => i.blocking);
-  const canSend = s.environment.writeAllowed && s.validation.ok && !!s.payloadHash && !active && checked && typed === "ENVIAR";
+  const prod = s.environment.environment === "producao";
+  const confirmWord = prod ? "ENVIAR PRODUCAO" : "ENVIAR";
+  const canSend = s.environment.writeAllowed && s.validation.ok && !!s.payloadHash && !active && checked && typed === confirmWord;
   const b = s.billing;
 
   return (
     <section className="card">
       <h2>Integração ADS</h2>
-      <div className={`alert ${s.environment.writeAllowed ? "warn" : "error"}`}>
-        Ambiente ADS: <strong>{s.environment.host}</strong> ({s.environment.environment}).{" "}
-        {s.environment.writeAllowed ? "Envio manual permitido somente em homologação." : "Envio BLOQUEADO: escrita só é permitida no ambiente de homologação."} Nada é enviado automaticamente.
+      <div className={`alert ${prod || !s.environment.writeAllowed ? "error" : "warn"}`}>
+        Ambiente ADS: <strong>{prod ? "PRODUÇÃO" : "homologação"}</strong> ({s.environment.host}).{" "}
+        {!s.environment.writeAllowed
+          ? prod
+            ? "Envio BLOQUEADO: escrita em produção não habilitada (ADS_PRODUCTION_WRITE_ENABLED)."
+            : "Envio BLOQUEADO (ADS_WRITE_DISABLED)."
+          : prod
+            ? "ATENÇÃO: o pedido gera movimentação REAL no ERP (estoque, financeiro e NF-e)."
+            : "Envio manual para testes."}{" "}
+        Nada é enviado automaticamente.
       </div>
       {msg && (
         <div className={`alert ${msg.kind}`} role="status">
@@ -179,7 +188,7 @@ export function AdsPanel({ id }: { id: string }) {
           {s.customerDraft.missing.length > 0 ? (
             <p style={{ color: "var(--warn-fg)" }}>Não pode ser cadastrado: faltam {s.customerDraft.missing.join(", ")}. Nenhum dado é inventado.</p>
           ) : (
-            <p className="muted">Confira os dados antes de cadastrar na ADS de homologação.</p>
+            <p className="muted">Confira os dados antes de cadastrar na ADS.</p>
           )}
           <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.8rem" }}>{JSON.stringify(s.customerDraft.request, null, 2)}</pre>
           <button
@@ -187,12 +196,12 @@ export function AdsPanel({ id }: { id: string }) {
             type="button"
             disabled={busy !== null || s.customerDraft.missing.length > 0 || !s.environment.writeAllowed}
             onClick={() => {
-              if (window.prompt("Cadastrar este cliente na ADS de HOMOLOGAÇÃO? Digite CADASTRAR para confirmar.") === "CADASTRAR") {
+              if (window.prompt(`Cadastrar este cliente na ADS de ${prod ? "PRODUÇÃO" : "homologação"}? Digite CADASTRAR para confirmar.`) === "CADASTRAR") {
                 void act("create", { action: "customer_create", confirm: "CADASTRAR" }, (d) => `Cliente: ${String((d as { customer?: { status?: string } }).customer?.status)}.`);
               }
             }}
           >
-            Cadastrar cliente na ADS (homologação)
+            Cadastrar cliente na ADS ({prod ? "PRODUÇÃO" : "homologação"})
           </button>
         </div>
       )}
@@ -237,7 +246,7 @@ export function AdsPanel({ id }: { id: string }) {
       </button>
       {showPayload && <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.8rem", maxHeight: 480, overflow: "auto" }}>{JSON.stringify(s.payload, null, 2)}</pre>}
 
-      <h3>4. Envio para a ADS (homologação)</h3>
+      <h3>4. Envio para a ADS ({prod ? "PRODUÇÃO" : "homologação"})</h3>
       {active ? (
         <p>
           Envio vigente: <span className={`chip ${SUB_TONE[active.status] ?? ""}`}>{active.status}</span>
@@ -255,19 +264,19 @@ export function AdsPanel({ id }: { id: string }) {
             <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} disabled={!s.validation.ok} /> Conferi comprador, itens, valores e parcelas da
             prévia acima.
           </label>
-          <input value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Digite ENVIAR" disabled={!s.validation.ok} style={{ maxWidth: 200, marginRight: 8 }} />
+          <input value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder={`Digite ${confirmWord}`} disabled={!s.validation.ok} style={{ maxWidth: 240, marginRight: 8 }} />
           <button
             className="btn btn-primary btn-sm"
             type="button"
             disabled={!canSend || busy !== null}
             onClick={() =>
-              act("send", { action: "send", confirm: "ENVIAR", payloadHash: s.payloadHash }, (d) => {
+              act("send", { action: "send", confirm: confirmWord, payloadHash: s.payloadHash }, (d) => {
                 const sub = (d as { submission?: { status?: string; adsPedidoId?: number | null; lastError?: string | null } }).submission;
                 return sub?.status === "SENT" ? `Pedido confirmado pela ADS: pedidoId ${sub.adsPedidoId}.` : `Resultado: ${sub?.status}. ${sub?.lastError ?? ""}`;
               })
             }
           >
-            {busy === "send" ? "Enviando…" : "Enviar para homologação"}
+            {busy === "send" ? "Enviando…" : prod ? "Enviar para PRODUÇÃO" : "Enviar para homologação"}
           </button>
           {blocking.length > 0 && <small className="muted" style={{ display: "block" }}>Resolva os bloqueios da validação para habilitar o envio.</small>}
         </>

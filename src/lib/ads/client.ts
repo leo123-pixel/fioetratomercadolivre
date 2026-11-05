@@ -146,19 +146,28 @@ export class AdsWriteBlockedError extends Error {
   }
 }
 
-/** Ambiente da ADS configurado (para exibição e para o bloqueio de escrita). */
-export function adsEnvironment(env: AdsEnv = getAdsEnv()): { host: string; environment: "homologacao" | "producao"; writeAllowed: boolean } {
+export type AdsEnvironmentName = "homologacao" | "producao";
+
+const flag = (name: string) => (process.env[name] ?? "").trim().toLowerCase() === "true";
+
+/**
+ * Ambiente da ADS configurado (para exibição, para separar clientes/envios/configuração e para o
+ * bloqueio de escrita). Homologação: escrita permitida (salvo ADS_WRITE_DISABLED). Qualquer outro host
+ * é PRODUÇÃO: escrita só com ADS_PRODUCTION_WRITE_ENABLED=true, definido conscientemente na Vercel.
+ */
+export function adsEnvironment(env: AdsEnv = getAdsEnv()): { host: string; environment: AdsEnvironmentName; writeAllowed: boolean } {
   const host = new URL(env.baseUrl).hostname;
   const homolog = ADS_WRITE_HOSTS.has(host);
-  const disabled = (process.env.ADS_WRITE_DISABLED ?? "").trim().toLowerCase() === "true";
-  return { host, environment: homolog ? "homologacao" : "producao", writeAllowed: homolog && !disabled };
+  const disabled = flag("ADS_WRITE_DISABLED");
+  const writeAllowed = !disabled && (homolog || flag("ADS_PRODUCTION_WRITE_ENABLED"));
+  return { host, environment: homolog ? "homologacao" : "producao", writeAllowed };
 }
 
-/** Lança se a escrita na ADS não for permitida (produção, host desconhecido ou desligada). */
+/** Lança se a escrita na ADS não for permitida neste ambiente. */
 export function assertAdsWriteAllowed(env: AdsEnv = getAdsEnv()): void {
   const e = adsEnvironment(env);
-  if (!ADS_WRITE_HOSTS.has(e.host)) throw new AdsWriteBlockedError(`Escrita na ADS bloqueada: ${e.host} não é o ambiente de homologação`);
-  if (!e.writeAllowed) throw new AdsWriteBlockedError("Escrita na ADS desligada (ADS_WRITE_DISABLED=true)");
+  if (flag("ADS_WRITE_DISABLED")) throw new AdsWriteBlockedError("Escrita na ADS desligada (ADS_WRITE_DISABLED=true)");
+  if (!e.writeAllowed) throw new AdsWriteBlockedError(`Escrita na ADS de PRODUÇÃO (${e.host}) bloqueada: habilite com ADS_PRODUCTION_WRITE_ENABLED=true`);
 }
 
 let adsFetchOverride: typeof fetch | null = null;

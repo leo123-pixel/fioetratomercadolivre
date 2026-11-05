@@ -788,7 +788,9 @@ model OrderBilling {
 /// Cliente da ADS por CPF/CNPJ (FOUND | NOT_FOUND | AMBIGUOUS | CREATING | CREATED | UNKNOWN | ERROR).
 model AdsCustomer {
   id           BigInt    @id @default(autoincrement())
-  cnpjCpf      String    @unique(map: "ads_customers_doc_key") @map("cnpj_cpf")
+  /// homologacao | producao (o clienteId de um ambiente não vale no outro)
+  environment  String
+  cnpjCpf      String    @map("cnpj_cpf")
   adsClienteId Int?      @map("ads_cliente_id")
   status       String
   draft        Json?
@@ -798,6 +800,7 @@ model AdsCustomer {
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
+  @@unique([environment, cnpjCpf], map: "ads_customers_env_doc_key")
   @@map("ads_customers")
 }
 
@@ -836,6 +839,7 @@ model AdsOrderAttempt {
   response     Json?
   error        String?
   durationMs   Int?     @map("duration_ms")
+  environment  String?
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("ads_order_attempts")

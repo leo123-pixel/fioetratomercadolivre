@@ -5,8 +5,9 @@ import { adsCall, AdsApiError, adsEnvironment, assertAdsWriteAllowed } from "./c
 import { buildAdsOrder, sanitizePayload } from "./order-payload";
 
 /**
- * Envio MANUAL de um pedido para a ADS de homologação, com idempotência local e remota:
- * - um envio vigente por pedido (índice único parcial: SENDING/SENT/UNKNOWN);
+ * Envio MANUAL de um pedido para a ADS (ambiente configurado), com idempotência local e remota:
+ * - um envio vigente por pedido em cada ambiente (índice único parcial: SENDING/SENT/UNKNOWN);
+ * - produção só com ADS_PRODUCTION_WRITE_ENABLED=true (ver assertAdsWriteAllowed);
  * - antes do POST consulta GET /pedidos/{idExterno}: se já existe, só registra (não duplica);
  * - write-ahead (SENDING) antes do POST; 201 com pedidoId → SENT (só aí é considerado enviado);
  * - timeout/rede/5xx → UNKNOWN: nunca reenvia sozinho; a conciliação consulta o idExterno;
@@ -47,8 +48,8 @@ const COLS = `id::text AS id, order_id::text AS "orderId", external_id AS "exter
 
 async function logAttempt(sql: Sql, submissionId: string | null, orderInboxId: string, a: { operation: string; status?: number | null; request?: unknown; response?: unknown; error?: string | null; durationMs?: number | null }) {
   await sql.execute(
-    `INSERT INTO ads_order_attempts (submission_id, order_id, operation, http_status, request, response, error, duration_ms)
-     VALUES ($1::uuid, $2::bigint, $3::text, $4::int, $5::jsonb, $6::jsonb, $7::text, $8::int)`,
+    `INSERT INTO ads_order_attempts (submission_id, order_id, operation, http_status, request, response, error, duration_ms, environment)
+     VALUES ($1::uuid, $2::bigint, $3::text, $4::int, $5::jsonb, $6::jsonb, $7::text, $8::int, $9::text)`,
     [
       submissionId,
       orderInboxId,
@@ -58,6 +59,7 @@ async function logAttempt(sql: Sql, submissionId: string | null, orderInboxId: s
       a.response === undefined ? null : JSON.stringify(a.response),
       a.error ? redactString(a.error).slice(0, 1000) : null,
       a.durationMs ?? null,
+      adsEnvironment().environment,
     ],
   );
 }
@@ -76,7 +78,10 @@ export async function listAttempts(sql: Sql, orderInboxId: string) {
 }
 
 async function activeSubmission(sql: Sql, orderInboxId: string): Promise<Submission | null> {
-  const [s] = await sql.query<Submission>(`SELECT ${COLS} FROM ads_order_submissions WHERE order_id = $1::bigint AND status IN ('SENDING', 'SENT', 'UNKNOWN')`, [orderInboxId]);
+  const [s] = await sql.query<Submission>(
+    `SELECT ${COLS} FROM ads_order_submissions WHERE order_id = $1::bigint AND environment = $2::text AND status IN ('SENDING', 'SENT', 'UNKNOWN')`,
+    [orderInboxId, adsEnvironment().environment],
+  );
   return s ?? null;
 }
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { adminHandler, type RouteContext } from "@/lib/api";
-import { adsEnvironment } from "@/lib/ads/client";
+import { adsEnvironment, assertAdsWriteAllowed } from "@/lib/ads/client";
 import { getAdsOrderSettings } from "@/lib/ads/commercial";
 import { buildCustomerDraft, createAdsCustomer, lookupAdsCustomer } from "@/lib/ads/customers";
 import { buildAdsOrder, sanitizePayload } from "@/lib/ads/order-payload";
@@ -59,7 +59,7 @@ const action = z.discriminatedUnion("action", [
   z.object({ action: z.literal("billing") }),
   z.object({ action: z.literal("customer_lookup") }),
   z.object({ action: z.literal("customer_create"), confirm: z.literal("CADASTRAR") }),
-  z.object({ action: z.literal("send"), confirm: z.literal("ENVIAR"), payloadHash: z.string().regex(/^[a-f0-9]{64}$/) }),
+  z.object({ action: z.literal("send"), confirm: z.enum(["ENVIAR", "ENVIAR PRODUCAO"]), payloadHash: z.string().regex(/^[a-f0-9]{64}$/) }),
   z.object({ action: z.literal("reconcile") }),
   z.object({ action: z.literal("status") }),
 ]);
@@ -91,6 +91,10 @@ export const POST = adminHandler(
         return jsonNoStore({ customer: { ...c, cnpjCpf: maskDocument(c.cnpjCpf), draft: undefined } });
       }
       case "send": {
+        // Primeiro a trava do ambiente; depois a confirmação (reforçada em produção: estoque, financeiro e NF-e reais).
+        assertAdsWriteAllowed();
+        const expected = adsEnvironment().environment === "producao" ? "ENVIAR PRODUCAO" : "ENVIAR";
+        if (b.data.confirm !== expected) return errorJson(400, "confirmation_required", `Confirme digitando ${expected}`);
         const s = await sendOrderToAds(sql, id, { payloadHash: b.data.payloadHash, requestedBy: by });
         return jsonNoStore({ submission: { ...s, payload: undefined } });
       }

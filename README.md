@@ -367,3 +367,12 @@ Fluxo por pedido (`/pedidos/:id` → painel **Integração ADS**):
 5. **Envio** — confirmação ("ENVIAR") do mesmo payload visualizado (hash). Só em homologação (`hom.adsapi.com.br`; `ADS_WRITE_DISABLED=true` desliga). `idExterno` = `M` + order_id (≤ 17). Antes do POST consulta o idExterno; timeout/5xx → `UNKNOWN` sem reenvio automático, resolvido por **Conciliar**. Webhooks nunca enviam pedidos.
 
 Tabelas (migration `20261108000000_ads_order_integration`): `marketplace_product_mappings`, `marketplace_order_billing`, `ads_customers`, `ads_order_submissions`, `ads_order_attempts`.
+
+### Virada para a ADS de produção
+
+1. Tecdisa: URL base da API de produção, chave de produção (e User-Agent, se for outro).
+2. Vercel (Production): `ADS_API_BASE_URL` = URL de produção, `ADS_API_KEY` = chave de produção (Sensitive),
+   `ADS_PRODUCTION_WRITE_ENABLED` = `true`; redeploy. Para voltar: `ADS_API_BASE_URL` da homologação.
+3. Importações: produtos, tabelas, preços e estoque passam a vir da produção (reimportar tudo).
+4. Configuração comercial: salvar de novo (códigos validados na produção; a de homologação fica guardada à parte).
+5. Primeiro pedido: manual, confirmação `ENVIAR PRODUCAO`. Clientes e envios de homologação não são reaproveitados.

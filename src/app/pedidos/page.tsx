@@ -40,8 +40,8 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
         <span className="muted">Recebidos por notificação (orders_v2) e consultados na API do Mercado Livre</span>
       </div>
       <div className="alert warn" role="note">
-        O envio para a ADS é <strong>manual</strong>, pedido a pedido, e só no ambiente de <strong>homologação</strong>. Nenhum pedido é enviado
-        automaticamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados.
+        O envio para a ADS é <strong>manual</strong>, pedido a pedido, com confirmação. Nenhum pedido é enviado automaticamente. Produção só com
+        escrita habilitada explicitamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados.
       </div>
       <div className="toolbar" style={{ marginBottom: 12 }}>
         <a className="btn btn-secondary btn-sm" href="/pedidos/mapeamentos">
