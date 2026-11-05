@@ -131,6 +131,14 @@ export class AdsClient {
   }
 }
 
+/** Motivo legível de uma resposta de erro da ADS (problem+json: title e traceId). */
+export function adsProblem(data: unknown): string {
+  const d = (data ?? {}) as { title?: unknown; traceId?: unknown };
+  const title = typeof d.title === "string" ? d.title.slice(0, 120) : "";
+  const trace = typeof d.traceId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(d.traceId) ? ` (traceId ${d.traceId})` : "";
+  return title ? `${title}${trace}` : "";
+}
+
 export interface AdsCallResult<T = unknown> {
   status: number;
   data: T | null;
