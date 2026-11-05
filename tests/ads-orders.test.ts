@@ -40,7 +40,7 @@ type AdsPost = { path: string; body: unknown };
 interface World {
   orders: Map<string, Record<string, unknown>>;
   billing: Record<string, unknown>;
-  clientes: { clienteId: number; cnpjCpf: string }[];
+  clientes: { clienteId: number; cnpjCpf: string; setorId?: string; nome?: string }[];
   adsOrders: Map<string, number>;
   adsPosts: AdsPost[];
   adsGets: string[];
@@ -116,7 +116,7 @@ function mockWorld(over: Partial<World> = {}): World {
         w.adsGets.push(path + url.search);
         if (path === "clientes") {
           const doc = url.searchParams.get("cnpjcpf");
-          const items = w.clientes.filter((c) => c.cnpjCpf === doc);
+          const items = doc ? w.clientes.filter((c) => c.cnpjCpf === doc) : w.clientes;
           return json({ items, page: 1, pageSize: 20, total: items.length, hasNext: false });
         }
         if (path === "cidades") return json([{ cidade_id: "1", descricao: "SAO PAULO", uf: "SP", codigoIbge: "3550308", datahora: "2020-01-01T00:00:00" }]);
@@ -485,5 +485,23 @@ describe("mapeamento assistido: busca por palavras e sugestões por código de b
     expect((await res.json()).remapped).toMatchObject({ mapped: 1, orders: 1 });
     const [o] = await t.sql().query<{ mapping: string }>(`SELECT mapping_status AS mapping FROM marketplace_order_inbox WHERE id = $1`, [id]);
     expect(o.mapping).toBe("MAPPED");
+  });
+});
+
+describe("setor do cliente (sem rota própria na ADS)", () => {
+  it("lista os setores em uso pelos clientes da ADS, sem dados pessoais, e recusa setor inexistente no ambiente", async () => {
+    const w = mockWorld();
+    await seedProduct(1804);
+    w.clientes.push({ clienteId: 1, cnpjCpf: "11222333000181", setorId: "10", nome: "CLIENTE PESSOA REAL" }, { clienteId: 2, cnpjCpf: CPF, setorId: "10" }, { clienteId: 3, cnpjCpf: "52998224700", setorId: "20" });
+    const { fetchCommercialOptions } = await import("@/lib/ads/commercial");
+    const o = await fetchCommercialOptions(t.sql());
+    expect(o.setores).toEqual([
+      { code: "10", label: "usado por 2 cliente(s) ativo(s)" },
+      { code: "20", label: "usado por 1 cliente(s) ativo(s)" },
+    ]);
+    expect(o.setoresComplete).toBe(true);
+    expect(JSON.stringify(o)).not.toMatch(/CLIENTE PESSOA REAL|11222333000181/);
+    await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerSetorId: "681" })).rejects.toMatchObject({ issues: [{ field: "customerSetorId" }] });
+    await expect(saveAdsOrderSettings(t.sql(), { ...SETTINGS, customerSetorId: "10" })).resolves.toMatchObject({ customerSetorId: "10" });
   });
 });

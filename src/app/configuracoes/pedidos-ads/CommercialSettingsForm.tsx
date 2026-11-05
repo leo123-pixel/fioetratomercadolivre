@@ -19,6 +19,8 @@ interface Options {
   prazos: (Option & { parcelas: number; dias: number[] })[];
   representantes: Option[];
   classes: Option[];
+  setores: Option[];
+  setoresComplete: boolean;
   tabelas: Option[];
   errors: Record<string, string>;
 }
@@ -182,11 +184,24 @@ export function CommercialSettingsForm() {
       <section className="card">
         <h2>Cadastro de cliente novo (homologação)</h2>
         <div className="form-grid">
-          <div className="field">
-            <label>Setor (setorId)</label>
-            <input value={form.customerSetorId ?? ""} maxLength={10} onChange={(e) => set("customerSetorId", e.target.value || null)} />
-            <small className="hint">A API não tem consulta de setores: use o código existente na ADS.</small>
-          </div>
+          {options.setores.length > 0 ? (
+            <Select
+              label="Setor (setorId)"
+              value={form.customerSetorId}
+              options={options.setores}
+              onChange={(v) => set("customerSetorId", v || null)}
+              optional
+              error={errors.customerSetorId}
+              hint={`Setores em uso pelos clientes desta ADS (${options.environment.environment})${options.setoresComplete ? "" : " — lista parcial"}. A API não tem consulta própria de setores.`}
+            />
+          ) : (
+            <div className="field">
+              <label>Setor (setorId)</label>
+              <input value={form.customerSetorId ?? ""} maxLength={10} onChange={(e) => set("customerSetorId", e.target.value || null)} />
+              <small className="hint">Nenhum setor encontrado nos clientes desta ADS: informe um código existente neste ambiente.</small>
+              {errors.customerSetorId && <small className="hint" style={{ color: "var(--danger-fg)" }}>{errors.customerSetorId}</small>}
+            </div>
+          )}
           <Select label="Classe (classeId)" value={form.customerClasseId} options={options.classes} onChange={(v) => set("customerClasseId", v || null)} optional error={errors.customerClasseId} />
         </div>
       </section>

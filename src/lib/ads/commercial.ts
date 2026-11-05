@@ -58,6 +58,10 @@ export interface CommercialOptions {
   prazos: (Option & { parcelas: number; dias: number[] })[];
   representantes: Option[];
   classes: Option[];
+  /** Setores em uso pelos clientes cadastrados na ADS (a API não tem rota de setores). */
+  setores: Option[];
+  /** true quando todos os clientes foram lidos (a lista de setores é completa). */
+  setoresComplete: boolean;
   tabelas: Option[];
   errors: Record<string, string>;
 }
@@ -69,6 +73,37 @@ export function prazoDays(p: Record<string, unknown>): number[] {
   const days: number[] = [];
   for (let i = 1; i <= n; i++) days.push(Number(p[`parcela${String(i).padStart(2, "0")}`] ?? 0));
   return days;
+}
+
+/**
+ * Setores efetivamente usados pelos clientes já cadastrados na ADS (GET /clientes, paginado).
+ * Só o código do setor é aproveitado; nenhum dado pessoal dos clientes é guardado ou devolvido.
+ */
+async function clientSectors(errors: Record<string, string>): Promise<{ options: Option[]; complete: boolean }> {
+  const counts = new Map<string, number>();
+  let complete = false;
+  try {
+    for (let page = 1; page <= 10; page++) {
+      const r = await adsCall<{ items?: { setorId?: string | null; inativo?: boolean }[]; hasNext?: boolean }>("GET", "clientes", { query: { page, pageSize: 500 } });
+      if (r.status !== 200 || !Array.isArray(r.data?.items)) {
+        errors["clientes (setores)"] = `HTTP ${r.status}`;
+        break;
+      }
+      for (const c of r.data.items) {
+        const code = s(c.setorId);
+        if (code && !c.inativo) counts.set(code, (counts.get(code) ?? 0) + 1);
+      }
+      if (!r.data.hasNext) {
+        complete = true;
+        break;
+      }
+    }
+  } catch (err) {
+    if (err instanceof AdsApiError && err.kind === "auth") throw err;
+    errors["clientes (setores)"] = err instanceof Error ? err.message : "erro";
+  }
+  const options = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([code, n]) => ({ code, label: `usado por ${n} cliente(s) ativo(s)` }));
+  return { options, complete };
 }
 
 /** Consulta as listas reais da ADS. Representantes: só código, nome e situação (a rota devolve usuário/senha). */
@@ -95,6 +130,7 @@ export async function fetchCommercialOptions(sql: Sql): Promise<CommercialOption
   const prazos = await list("prazos");
   const representantes = await list("representantes");
   const classes = await list("classes");
+  const setores = await clientSectors(errors);
   const tabelas = await sql.query<{ code: string; description: string; inactive: boolean }>(
     `SELECT code, description, inactive FROM price_tables WHERE char_length(code) = 1 ORDER BY code`,
   );
@@ -107,6 +143,8 @@ export async function fetchCommercialOptions(sql: Sql): Promise<CommercialOption
     prazos: prazos.map((p) => ({ code: s(p.codigo), label: s(p.descricao), inactive: p.inativo === true, parcelas: Number(p.parcelas ?? 0), dias: prazoDays(p) })),
     representantes: representantes.map((r) => ({ code: s(r.codigo), label: s(r.nome), inactive: r.inativo === true })),
     classes: classes.map((c) => ({ code: s(c.classeId), label: s(c.descricao), inactive: c.inativo === true })),
+    setores: setores.options,
+    setoresComplete: setores.complete,
     tabelas: tabelas.map((t) => ({ code: t.code, label: t.description, inactive: t.inactive })),
     errors,
   };
@@ -144,6 +182,10 @@ export async function saveAdsOrderSettings(sql: Sql, input: unknown): Promise<Ad
   check("prazoId", v.prazoId, o.prazos, "prazos");
   check("representanteId", v.representanteId, o.representantes, "representantes", false);
   check("customerClasseId", v.customerClasseId, o.classes, "classes", false);
+  // Setor: sem rota própria na API; quando todos os clientes foram lidos, o código precisa estar em uso.
+  if (v.customerSetorId && o.setoresComplete && o.setores.length && !o.setores.some((x) => x.code === v.customerSetorId)) {
+    issues.push({ field: "customerSetorId", message: `Setor ${v.customerSetorId} não é usado por nenhum cliente desta ADS (provavelmente não existe neste ambiente)` });
+  }
   if (!o.tabelas.some((t) => t.code === v.tabela && !t.inactive)) issues.push({ field: "tabela", message: `Tabela ${v.tabela} não existe ou está inativa (tabelas importadas da ADS)` });
   if (issues.length) throw new SettingsError(issues);
   await sql.execute(
