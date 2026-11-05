@@ -58,6 +58,11 @@ export function backoffMs(attempt: number, retryAfterMs?: number, random: () => 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 let sleepImpl: (ms: number) => Promise<void> = defaultSleep;
 
+/** Espera usada nas retentativas (substituível nos testes). */
+export function retrySleep(ms: number): Promise<void> {
+  return sleepImpl(ms);
+}
+
 /** Somente testes: evita esperas reais nas retentativas. */
 export function setRetrySleepForTesting(fn: ((ms: number) => Promise<void>) | null) {
   sleepImpl = fn ?? defaultSleep;

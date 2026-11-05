@@ -59,7 +59,7 @@ export async function lookupAdsCustomer(sql: Sql, cnpjCpf: string, orderInboxId:
   const r = await adsCall<{ items?: { clienteId?: number; cnpjCpf?: string; inativo?: boolean }[] }>("GET", "clientes", { query: { cnpjcpf: doc, page: 1, pageSize: 20 } });
   await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_LOOKUP", status: r.status, request: { cnpjcpf: maskDocument(doc) }, response: { total: r.data?.items?.length ?? null }, durationMs: r.durationMs });
   if (r.status !== 200 || !Array.isArray(r.data?.items)) {
-    await upsertCustomer(sql, doc, "ERROR", { lastError: `Consulta de clientes na ADS: HTTP ${r.status}` });
+    await upsertCustomer(sql, doc, "ERROR", { lastError: r.status >= 500 || r.status === 429 ? `ADS indisponível (HTTP ${r.status}) ao consultar clientes; tente de novo em instantes` : `Consulta de clientes na ADS: HTTP ${r.status}` });
     return (await getAdsCustomer(sql, doc))!;
   }
   const matches = r.data.items.filter((c) => String(c.cnpjCpf ?? "").replace(/\D/g, "") === doc && typeof c.clienteId === "number");

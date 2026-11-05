@@ -658,3 +658,32 @@ describe("código IBGE da cidade", () => {
     expect(urls).toEqual(["/api/v1/localidades/estados/SP/municipios"]); // cache por UF; só a UF é enviada
   });
 });
+
+describe("ADS momentaneamente indisponível", () => {
+  it("consultas (GET) são repetidas em 503; envio (POST) nunca é repetido automaticamente", async () => {
+    mockWorld();
+    useHomologation();
+    const { adsCall } = await import("@/lib/ads/client");
+    const original = globalThis.fetch;
+    const calls: string[] = [];
+    let failures = 2;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.origin === HOM) {
+          calls.push(`${init?.method ?? "GET"} ${url.pathname.split("/").pop()}`);
+          if (failures-- > 0) return new Response("Service Unavailable", { status: 503 });
+          return new Response("[]", { status: 200 });
+        }
+        return original(input, init);
+      }),
+    );
+    expect((await adsCall("GET", "prazos")).status).toBe(200);
+    expect(calls).toEqual(["GET prazos", "GET prazos", "GET prazos"]);
+    calls.length = 0;
+    failures = 1;
+    expect((await adsCall("POST", "pedidos", { body: {} })).status).toBe(503);
+    expect(calls).toEqual(["POST pedidos"]);
+  });
+});

@@ -241,9 +241,11 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
   // Parcelas pelo prazo configurado (consulta a ADS para obter os dias).
   let parcelas: AdsOrderPayload["parcelas"] = [];
   if (settings) {
-    const r = await adsCall<Record<string, unknown>[]>("GET", "prazos").catch(() => null);
-    const prazo = Array.isArray(r?.data) ? r!.data.find((p) => String(p.codigo ?? "").trim() === settings.prazoId) : undefined;
-    if (!prazo) block("prazo_unavailable", `Prazo ${settings.prazoId} não encontrado na ADS`);
+    const r = await adsCall<Record<string, unknown>[]>("GET", "prazos").catch((err: Error) => ({ status: 0, data: null, durationMs: 0, error: err.message }));
+    const listed = r.status === 200 && Array.isArray(r.data);
+    const prazo = listed ? (r.data as Record<string, unknown>[]).find((p) => String(p.codigo ?? "").trim() === settings.prazoId) : undefined;
+    if (!listed) block("ads_unavailable", `ADS indisponível ao consultar os prazos (${r.status ? `HTTP ${r.status}` : "sem resposta"}); tente validar de novo em instantes`);
+    else if (!prazo) block("prazo_unavailable", `Prazo ${settings.prazoId} não encontrado na ADS`);
     else {
       let base = o.dateCreated ? new Date(o.dateCreated) : new Date();
       if (settings.dueDateBase === "payment_approved") {

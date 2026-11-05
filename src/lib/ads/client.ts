@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { redactString } from "../logger";
+import { retrySleep } from "../marketplace/errors";
 import { getAdsEnv, type AdsEnv } from "./env";
 
 export type AdsErrorKind = "auth" | "bad_request" | "not_found" | "rate_limited" | "server" | "timeout" | "network" | "invalid_response";
@@ -200,18 +201,33 @@ export async function adsCall<T = unknown>(
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const started = Date.now();
   let res: Response;
-  try {
-    res = await (adsFetchOverride ?? fetch)(url, {
-      method,
-      headers,
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? env.timeoutMs),
-      cache: "no-store",
-    });
-  } catch (err) {
-    const name = (err as Error)?.name;
-    if (name === "TimeoutError" || name === "AbortError") throw new AdsApiError("timeout", `Tempo esgotado em ${method} /${resource}`);
-    throw new AdsApiError("network", `Falha de rede em ${method} /${resource}`);
+  // Leituras (GET) são repetidas em indisponibilidade momentânea da ADS (429/502/503/504, rede).
+  // Escritas (POST) NUNCA são repetidas aqui: o resultado incerto é tratado por quem chama.
+  const maxAttempts = method === "GET" ? 3 : 1;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      res = await (adsFetchOverride ?? fetch)(url, {
+        method,
+        headers,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? env.timeoutMs),
+        cache: "no-store",
+      });
+    } catch (err) {
+      const name = (err as Error)?.name;
+      const kind = name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
+      if (attempt < maxAttempts) {
+        await retrySleep(1_000 * attempt);
+        continue;
+      }
+      throw new AdsApiError(kind, kind === "timeout" ? `Tempo esgotado em ${method} /${resource}` : `Falha de rede em ${method} /${resource}`);
+    }
+    if (attempt < maxAttempts && [429, 502, 503, 504].includes(res.status)) {
+      await res.text().catch(() => "");
+      await retrySleep(Math.min(retryAfterMs(res) ?? 1_500 * attempt, 5_000));
+      continue;
+    }
+    break;
   }
   const text = await res.text().catch(() => "");
   let data: unknown = null;
