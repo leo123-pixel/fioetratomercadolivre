@@ -31,6 +31,11 @@ export async function createTestDatabase(): Promise<{ db: PGlite; sql: Sql }> {
 }
 
 const TABLES = [
+  "ads_order_attempts",
+  "ads_order_submissions",
+  "ads_customers",
+  "marketplace_order_billing",
+  "marketplace_product_mappings",
   "marketplace_order_raw",
   "marketplace_shipments",
   "marketplace_order_payments",

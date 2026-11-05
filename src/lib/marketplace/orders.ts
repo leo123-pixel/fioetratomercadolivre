@@ -5,6 +5,8 @@ import type { Sql } from "../sql";
 import { getMarketplaceConfig } from "./config";
 import { PermanentEventError, withReadRetry } from "./errors";
 import { enqueueDerived } from "./events";
+import { resolveProduct, type Resolved } from "./mappings";
+import { adsStatusOf, mappingStatusOf } from "./order-status";
 
 /**
  * Pedidos do Mercado Livre — SOMENTE recepção, consulta e armazenamento (fase 5).
@@ -17,7 +19,7 @@ import { enqueueDerived } from "./events";
  *   3. SELLER_SKU   — o SKU do vendedor é "ADS-<produtoId>" (padrão gravado na publicação) e o produto existe.
  *   Sem correspondência confiável → UNMAPPED (tratamento manual).
  */
-export const ADS_STATUSES = ["RECEIVED", "PROCESSING", "READY_FOR_MAPPING", "READY_FOR_ADS", "BLOCKED", "ERROR"] as const;
+export { ADS_STATUSES, adsStatusOf } from "./order-status";
 
 interface MeliOrderItem {
   item?: { id?: string; title?: string; seller_sku?: string | null; variation_id?: number | string | null; category_id?: string; user_product_id?: string | null };
@@ -101,15 +103,7 @@ export function paymentStatusOf(payments: MeliPayment[]): string | null {
   return latest.status ?? null;
 }
 
-/** Status de preparação para a ADS (não significa envio). */
-export function adsStatusOf(o: { orderStatus: string | null; paymentStatus: string | null; mapping: string; unmapped: number }): { status: (typeof ADS_STATUSES)[number]; reason: string | null } {
-  if (o.orderStatus === "cancelled" || o.orderStatus === "invalid") return { status: "BLOCKED", reason: o.orderStatus === "cancelled" ? "Pedido cancelado no Mercado Livre" : "Pedido inválido no Mercado Livre" };
-  if (o.mapping !== "MAPPED") return { status: "READY_FOR_MAPPING", reason: `${o.unmapped} item(ns) sem produto ADS correspondente` };
-  if (o.orderStatus === "paid" || o.paymentStatus === "approved") return { status: "READY_FOR_ADS", reason: null };
-  return { status: "RECEIVED", reason: `Aguardando confirmação do pagamento (pedido: ${o.orderStatus ?? "?"}, pagamento: ${o.paymentStatus ?? "?"})` };
-}
-
-interface MappedItem {
+interface MappedItem extends Resolved {
   lineKey: string;
   itemId: string;
   variationId: string | null;
@@ -122,11 +116,6 @@ interface MappedItem {
   fullUnitPrice: string | null;
   saleFee: string | null;
   currencyId: string | null;
-  listingId: number | null;
-  productId: number | null;
-  adsProductId: number | null;
-  mappingStatus: "MAPPED" | "UNMAPPED";
-  mappingMethod: "LISTING" | "USER_PRODUCT" | "SELLER_SKU" | null;
 }
 
 async function mapItem(sql: Sql, oi: MeliOrderItem): Promise<MappedItem> {
@@ -134,7 +123,8 @@ async function mapItem(sql: Sql, oi: MeliOrderItem): Promise<MappedItem> {
   const variationId = str(oi.item?.variation_id, 30);
   const userProductId = str(oi.item?.user_product_id, 40);
   const sellerSku = str(oi.item?.seller_sku, 120);
-  const base = {
+  const resolved = await resolveProduct(sql, { itemId: itemId || null, variationId, userProductId, sellerSku });
+  return {
     lineKey: `${itemId}:${variationId ?? ""}`,
     itemId,
     variationId,
@@ -147,30 +137,8 @@ async function mapItem(sql: Sql, oi: MeliOrderItem): Promise<MappedItem> {
     fullUnitPrice: money(oi.full_unit_price),
     saleFee: money(oi.sale_fee),
     currencyId: str(oi.currency_id, 5),
+    ...resolved,
   };
-  type L = { listingId: number; productId: number; adsProductId: number };
-  const [byListing] = itemId
-    ? await sql.query<L>(
-        `SELECT id AS "listingId", product_id AS "productId", ads_product_id AS "adsProductId" FROM marketplace_listings
-         WHERE marketplace_item_id = $1::text ORDER BY id DESC LIMIT 1`,
-        [itemId],
-      )
-    : [];
-  if (byListing) return { ...base, ...byListing, mappingStatus: "MAPPED", mappingMethod: "LISTING" };
-  const [byUp] = userProductId
-    ? await sql.query<L>(
-        `SELECT id AS "listingId", product_id AS "productId", ads_product_id AS "adsProductId" FROM marketplace_listings
-         WHERE user_product_id = $1::text ORDER BY id DESC LIMIT 1`,
-        [userProductId],
-      )
-    : [];
-  if (byUp) return { ...base, ...byUp, mappingStatus: "MAPPED", mappingMethod: "USER_PRODUCT" };
-  const adsId = sellerSku ? /^ADS-(\d{1,10})$/.exec(sellerSku)?.[1] : undefined;
-  const [bySku] = adsId
-    ? await sql.query<{ productId: number; adsProductId: number }>(`SELECT id AS "productId", ads_product_id AS "adsProductId" FROM products WHERE ads_product_id = $1::int`, [Number(adsId)])
-    : [];
-  if (bySku) return { ...base, listingId: null, ...bySku, mappingStatus: "MAPPED", mappingMethod: "SELLER_SKU" };
-  return { ...base, listingId: null, productId: null, adsProductId: null, mappingStatus: "UNMAPPED", mappingMethod: null };
 }
 
 export interface OrderProcessResult extends Record<string, unknown> {
@@ -237,7 +205,7 @@ export async function processOrder(sql: Sql, orderId: string): Promise<OrderProc
 
   const items = await Promise.all((order.order_items ?? []).slice(0, 200).map((oi) => mapItem(sql, oi)));
   const unmapped = items.filter((i) => i.mappingStatus === "UNMAPPED").length;
-  const mapping = !items.length ? "UNMAPPED" : unmapped === 0 ? "MAPPED" : unmapped === items.length ? "UNMAPPED" : "PARTIAL";
+  const mapping = mappingStatusOf(items.length, unmapped);
   const payments = (order.payments ?? []).slice(0, 50);
   const paymentStatus = paymentStatusOf(payments);
   const orderStatus = str(order.status, 40);
@@ -314,16 +282,16 @@ export async function processOrder(sql: Sql, orderId: string): Promise<OrderProc
     for (const it of items) {
       await tx.execute(
         `INSERT INTO marketplace_order_items (order_id, line_key, marketplace_item_id, variation_id, user_product_id, seller_sku, title, category_id,
-           quantity, unit_price, full_unit_price, sale_fee, currency_id, listing_id, product_id, ads_product_id, mapping_status, mapping_method)
+           quantity, unit_price, full_unit_price, sale_fee, currency_id, listing_id, product_id, ads_product_id, mapping_status, mapping_method, mapping_id)
          VALUES ($1::bigint, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::numeric, $10::numeric, $11::numeric,
-           $12::numeric, $13::text, $14::int, $15::int, $16::int, $17::text, $18::text)
+           $12::numeric, $13::text, $14::int, $15::int, $16::int, $17::text, $18::text, $19::bigint)
          ON CONFLICT (order_id, line_key) DO UPDATE SET user_product_id = EXCLUDED.user_product_id, seller_sku = EXCLUDED.seller_sku,
            title = EXCLUDED.title, category_id = EXCLUDED.category_id, quantity = EXCLUDED.quantity, unit_price = EXCLUDED.unit_price,
            full_unit_price = EXCLUDED.full_unit_price, sale_fee = EXCLUDED.sale_fee, currency_id = EXCLUDED.currency_id,
            listing_id = EXCLUDED.listing_id, product_id = EXCLUDED.product_id, ads_product_id = EXCLUDED.ads_product_id,
-           mapping_status = EXCLUDED.mapping_status, mapping_method = EXCLUDED.mapping_method
+           mapping_status = EXCLUDED.mapping_status, mapping_method = EXCLUDED.mapping_method, mapping_id = EXCLUDED.mapping_id
          WHERE marketplace_order_items.mapping_method IS DISTINCT FROM 'MANUAL'`,
-        [id, it.lineKey, it.itemId, it.variationId, it.userProductId, it.sellerSku, it.title, it.categoryId, it.quantity, it.unitPrice, it.fullUnitPrice, it.saleFee, it.currencyId, it.listingId, it.productId, it.adsProductId, it.mappingStatus, it.mappingMethod],
+        [id, it.lineKey, it.itemId, it.variationId, it.userProductId, it.sellerSku, it.title, it.categoryId, it.quantity, it.unitPrice, it.fullUnitPrice, it.saleFee, it.currencyId, it.listingId, it.productId, it.adsProductId, it.mappingStatus, it.mappingMethod, it.mappingId],
       );
     }
     await tx.execute(`DELETE FROM marketplace_order_items WHERE order_id = $1::bigint AND NOT (line_key = ANY($2::text[]))`, [id, items.map((i) => i.lineKey)]);

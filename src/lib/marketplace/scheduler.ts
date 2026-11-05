@@ -128,6 +128,8 @@ export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger, 
 async function housekeeping(sql: Sql): Promise<void> {
   const cfg = getMarketplaceConfig();
   await sql.execute(`DELETE FROM marketplace_order_raw WHERE expires_at < now()`);
+  // Dados fiscais do comprador seguem a mesma retenção do JSON original (LGPD).
+  await sql.execute(`DELETE FROM marketplace_order_billing WHERE fetched_at < now() - make_interval(days => $1::int)`, [cfg.orderRawRetentionDays]);
   await sql.execute(
     `DELETE FROM marketplace_webhook_events WHERE status IN ('COMPLETED', 'IGNORED') AND received_at < now() - make_interval(days => $1::int)`,
     [cfg.eventRetentionDays],

@@ -676,8 +676,9 @@ model OrderItem {
   adsProductId      Int?     @map("ads_product_id")
   /// MAPPED | UNMAPPED
   mappingStatus     String   @map("mapping_status")
-  /// LISTING | USER_PRODUCT | SELLER_SKU | MANUAL
+  /// LISTING | ITEM_LINK | USER_PRODUCT | SELLER_SKU | SKU_LINK | MANUAL
   mappingMethod     String?  @map("mapping_method")
+  mappingId         BigInt?  @map("mapping_id")
 
   order   OrderInbox          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   listing MarketplaceListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
@@ -740,4 +741,102 @@ model OrderRaw {
 
   @@index([expiresAt], map: "marketplace_order_raw_expires_idx")
   @@map("marketplace_order_raw")
+}
+
+// ---------------------------------------------------------------------------
+// Pedidos Mercado Livre → ADS (homologação). Migration 20261108000000_ads_order_integration.
+// Índices únicos parciais e CHECKs estão na migration SQL.
+// ---------------------------------------------------------------------------
+
+/// Vínculo reutilizável: anúncio (ITEM) ou SELLER_SKU validado (SKU) → produto ADS. Nunca por título.
+model ProductMapping {
+  id                BigInt    @id @default(autoincrement())
+  mappingType       String    @map("mapping_type")
+  marketplaceItemId String?   @map("marketplace_item_id")
+  variationId       String    @default("") @map("variation_id")
+  sellerSku         String?   @map("seller_sku")
+  productId         Int       @map("product_id")
+  adsProductId      Int       @map("ads_product_id")
+  source            String    @default("MANUAL")
+  createdBy         String    @map("created_by")
+  notes             String?
+  active            Boolean   @default(true)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  deactivatedAt     DateTime? @map("deactivated_at") @db.Timestamptz(3)
+
+  @@map("marketplace_product_mappings")
+}
+
+/// Dados fiscais do comprador (acesso restrito, retenção ORDER_RAW_RETENTION_DAYS).
+model OrderBilling {
+  orderId           BigInt   @id @map("order_id")
+  billingInfoId     String?  @map("billing_info_id")
+  /// COMPLETE | INCOMPLETE | UNAVAILABLE
+  status            String
+  docType           String?  @map("doc_type")
+  docNumber         String?  @map("doc_number")
+  name              String?
+  stateRegistration String?  @map("state_registration")
+  taxpayerType      String?  @map("taxpayer_type")
+  address           Json?
+  missing           Json     @default("[]")
+  fetchedAt         DateTime @default(now()) @map("fetched_at") @db.Timestamptz(3)
+
+  @@map("marketplace_order_billing")
+}
+
+/// Cliente da ADS por CPF/CNPJ (FOUND | NOT_FOUND | AMBIGUOUS | CREATING | CREATED | UNKNOWN | ERROR).
+model AdsCustomer {
+  id           BigInt    @id @default(autoincrement())
+  cnpjCpf      String    @unique(map: "ads_customers_doc_key") @map("cnpj_cpf")
+  adsClienteId Int?      @map("ads_cliente_id")
+  status       String
+  draft        Json?
+  lastError    String?   @map("last_error")
+  createdBy    String?   @map("created_by")
+  checkedAt    DateTime? @map("checked_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("ads_customers")
+}
+
+/// Envio de pedido à ADS (SENDING | SENT | UNKNOWN | FAILED | CANCELED). Um vigente por pedido.
+model AdsOrderSubmission {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId            BigInt    @map("order_id")
+  marketplaceOrderId String    @map("marketplace_order_id")
+  externalId         String    @map("external_id")
+  environment        String
+  status             String
+  payload            Json
+  payloadHash        String    @map("payload_hash")
+  adsPedidoId        Int?      @map("ads_pedido_id")
+  adsStatus          String?   @map("ads_status")
+  attempts           Int       @default(0)
+  requestedBy        String    @map("requested_by")
+  lastError          String?   @map("last_error")
+  sentAt             DateTime? @map("sent_at") @db.Timestamptz(3)
+  completedAt        DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([externalId], map: "ads_order_submissions_external_idx")
+  @@map("ads_order_submissions")
+}
+
+/// Cada chamada à ADS ligada a um pedido (consulta, cadastro, POST, conciliação, situação).
+model AdsOrderAttempt {
+  id           BigInt   @id @default(autoincrement())
+  submissionId String?  @map("submission_id") @db.Uuid
+  orderId      BigInt?  @map("order_id")
+  operation    String
+  httpStatus   Int?     @map("http_status")
+  request      Json?
+  response     Json?
+  error        String?
+  durationMs   Int?     @map("duration_ms")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("ads_order_attempts")
 }

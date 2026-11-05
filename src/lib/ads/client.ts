@@ -130,6 +130,93 @@ export class AdsClient {
   }
 }
 
+export interface AdsCallResult<T = unknown> {
+  status: number;
+  data: T | null;
+  durationMs: number;
+}
+
+/** Hosts da ADS em que é permitido ESCREVER (criar pedido/cliente) nesta fase: somente homologação. */
+export const ADS_WRITE_HOSTS: ReadonlySet<string> = new Set(["hom.adsapi.com.br"]);
+
+export class AdsWriteBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdsWriteBlockedError";
+  }
+}
+
+/** Ambiente da ADS configurado (para exibição e para o bloqueio de escrita). */
+export function adsEnvironment(env: AdsEnv = getAdsEnv()): { host: string; environment: "homologacao" | "producao"; writeAllowed: boolean } {
+  const host = new URL(env.baseUrl).hostname;
+  const homolog = ADS_WRITE_HOSTS.has(host);
+  const disabled = (process.env.ADS_WRITE_DISABLED ?? "").trim().toLowerCase() === "true";
+  return { host, environment: homolog ? "homologacao" : "producao", writeAllowed: homolog && !disabled };
+}
+
+/** Lança se a escrita na ADS não for permitida (produção, host desconhecido ou desligada). */
+export function assertAdsWriteAllowed(env: AdsEnv = getAdsEnv()): void {
+  const e = adsEnvironment(env);
+  if (!ADS_WRITE_HOSTS.has(e.host)) throw new AdsWriteBlockedError(`Escrita na ADS bloqueada: ${e.host} não é o ambiente de homologação`);
+  if (!e.writeAllowed) throw new AdsWriteBlockedError("Escrita na ADS desligada (ADS_WRITE_DISABLED=true)");
+}
+
+let adsFetchOverride: typeof fetch | null = null;
+/** Somente testes. */
+export function setAdsFetchForTesting(fn: typeof fetch | null) {
+  adsFetchOverride = fn;
+}
+
+/**
+ * Chamada genérica à ADS (GET de cadastros/consultas e POST de pedido/cliente). Não faz retentativa:
+ * quem chama decide, e um POST com resultado incerto NUNCA é repetido automaticamente.
+ * 4xx/5xx retornam status e corpo (para registrar o histórico); só falhas de rede/timeout lançam.
+ */
+export async function adsCall<T = unknown>(
+  method: "GET" | "POST",
+  resource: string,
+  opts: { query?: Record<string, string | number | (string | number)[] | undefined>; body?: unknown; timeoutMs?: number } = {},
+): Promise<AdsCallResult<T>> {
+  const env = getAdsEnv();
+  if (method !== "GET") assertAdsWriteAllowed(env);
+  if (!/^[a-z0-9-]+(\/[A-Za-z0-9-]+)*$/.test(resource)) throw new Error("Recurso ADS inválido");
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts.query ?? {})) {
+    if (v === undefined || v === "") continue;
+    for (const one of Array.isArray(v) ? v : [v]) params.append(k, String(one));
+  }
+  const qs = params.toString();
+  const url = `${env.baseUrl}/api/v1/${env.cnpj}/${resource}${qs ? `?${qs}` : ""}`;
+  const headers: Record<string, string> = { "x-api-key": env.apiKey, "User-Agent": env.userAgent, Accept: "application/json" };
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  const started = Date.now();
+  let res: Response;
+  try {
+    res = await (adsFetchOverride ?? fetch)(url, {
+      method,
+      headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? env.timeoutMs),
+      cache: "no-store",
+    });
+  } catch (err) {
+    const name = (err as Error)?.name;
+    if (name === "TimeoutError" || name === "AbortError") throw new AdsApiError("timeout", `Tempo esgotado em ${method} /${resource}`);
+    throw new AdsApiError("network", `Falha de rede em ${method} /${resource}`);
+  }
+  const text = await res.text().catch(() => "");
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: redactString(text.slice(0, 500)) };
+    }
+  }
+  if (res.status === 401 || res.status === 403) throw new AdsApiError("auth", `ADS recusou as credenciais (HTTP ${res.status}) em /${resource}`, res.status);
+  return { status: res.status, data: data as T, durationMs: Date.now() - started };
+}
+
 function retryAfterMs(res: Response): number | undefined {
   const header = res.headers.get("retry-after");
   if (!header) return undefined;

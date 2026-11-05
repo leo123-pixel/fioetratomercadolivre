@@ -1,6 +1,10 @@
 import "server-only";
 import type { NextRequest, NextResponse } from "next/server";
-import { AdsApiError } from "./ads/client";
+import { AdsApiError, AdsWriteBlockedError } from "./ads/client";
+import { SettingsError } from "./ads/commercial";
+import { CustomerError } from "./ads/customers";
+import { SubmissionError } from "./ads/order-submission";
+import { MappingError } from "./marketplace/mappings";
 import { getAdminSession } from "./auth/admin";
 import { DraftLockedError } from "./catalog/drafts";
 import { ConfigError } from "./env";
@@ -49,6 +53,11 @@ export function adminHandler<C = unknown>(handler: (req: NextRequest, ctx: C) =>
         // Somente para administradores autenticados; a mensagem cita nomes de variáveis, nunca valores.
         return jsonNoStore({ error: "config_error", message: "Configuração do servidor incompleta", detail: err.message }, 500);
       }
+      if (err instanceof AdsWriteBlockedError) return jsonNoStore({ error: "ads_write_blocked", message: err.message }, 403);
+      if (err instanceof SubmissionError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, 409);
+      if (err instanceof CustomerError) return jsonNoStore({ error: err.code, message: err.message }, 409);
+      if (err instanceof MappingError) return jsonNoStore({ error: err.code, message: err.message }, 409);
+      if (err instanceof SettingsError) return jsonNoStore({ error: "invalid_settings", message: "Configuração inválida", issues: err.issues.map((i) => ({ path: i.field, message: i.message })) }, 422);
       if (err instanceof AdsApiError) return jsonNoStore({ error: "ads_error", kind: err.kind, message: err.message }, 502);
       if (err instanceof StorageError) return errorJson(502, "storage_error", err.message);
       if (err instanceof DraftLockedError) return jsonNoStore({ error: "draft_locked", status: err.status, message: err.message }, 409);

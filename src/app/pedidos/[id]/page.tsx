@@ -6,6 +6,7 @@ import { getOrder } from "@/lib/marketplace/orders";
 import { getSql } from "@/lib/sql";
 import { PageProblem } from "../../PageProblem";
 import { ADS_STATUS_LABEL, MAPPING_LABEL, MAPPING_METHOD_LABEL, ORDER_STATUS_LABEL, PAYMENT_LABEL } from "../labels";
+import { AdsPanel } from "./AdsPanel";
 import { OrderActions } from "./OrderActions";
 
 export const dynamic = "force-dynamic";
@@ -42,9 +43,6 @@ export default async function PedidoPage({ params }: { params: Promise<{ id: str
       <div className="page-head">
         <h1>Pedido {str(o.marketplaceOrderId)}</h1>
         <span className={`chip ${ads.tone}`}>{ads.text}</span>
-      </div>
-      <div className="alert warn" role="note">
-        Integração de escrita com o ERP ADS <strong>não habilitada</strong>: este pedido não foi e não será enviado à ADS nesta fase.
       </div>
       {o.adsStatusReason && <div className="alert info">{str(o.adsStatusReason)}</div>}
       {o.lastError && <div className="alert error">Último erro: {str(o.lastError)}</div>}
@@ -184,7 +182,12 @@ export default async function PedidoPage({ params }: { params: Promise<{ id: str
                     {i.mappingStatus === "MAPPED" ? (
                       <span className="chip ok">{MAPPING_METHOD_LABEL[String(i.mappingMethod)] ?? str(i.mappingMethod)}</span>
                     ) : (
-                      <span className="chip danger">UNMAPPED — tratamento manual</span>
+                      <>
+                        <span className="chip danger">UNMAPPED</span>{" "}
+                        <a className="btn btn-secondary btn-sm" href={`/pedidos/mapeamentos?item=${encodeURIComponent(String(i.itemId))}`}>
+                          Mapear
+                        </a>
+                      </>
                     )}
                   </td>
                 </tr>
@@ -193,6 +196,8 @@ export default async function PedidoPage({ params }: { params: Promise<{ id: str
           </table>
         </div>
       </section>
+
+      <AdsPanel id={String(o.id)} />
 
       <section className="card">
         <h2>Pagamentos</h2>

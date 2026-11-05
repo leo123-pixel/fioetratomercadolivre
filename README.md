@@ -349,3 +349,21 @@ ML ──POST──► /api/webhooks/mercadolivre ── valida (schema, app_id,
 2. **URL de retorno de notificações**: `https://fioetrato-ml.vercel.app/api/webhooks/mercadolivre` (não é o callback OAuth).
 3. **Tópicos**: marque `Items` (items), `Orders` (orders_v2), `Shipments` (shipments) e, para contas User Products, `User Products` (user_products) e `User Products Families` (user_products_families). Opcional: `Items prices`.
 4. Salve e confira em **Monitoramento → Status do webhook** a primeira notificação recebida.
+
+---
+
+## Pedidos Mercado Livre → ADS (homologação, envio manual)
+
+Contrato real da ADS (OpenAPI em `https://hom.adsapi.com.br/openapi/v1.json`): `POST /api/v1/{cnpjDistribuidora}/pedidos`,
+`GET /pedidos/{idExterno}` (conciliação), `GET /pedidos/status`, `GET|POST /clientes`, e as consultas `operacoes`,
+`origem-pedido`, `formas-de-pagamento`, `prazos`, `representantes`, `classes`, `cidades`.
+
+Fluxo por pedido (`/pedidos/:id` → painel **Integração ADS**):
+
+1. **Produtos** — correspondência automática: anúncio publicado pelo integrador → anúncio vinculado pelo admin (`ITEM_LINK`) → User Product → SKU `ADS-<id>` → SKU validado (`SKU_LINK`); senão `UNMAPPED`, tratado em `/pedidos/mapeamentos` (vínculo reutilizado nos pedidos seguintes). Nunca por título.
+2. **Comprador** — `buyer.billing_info.id` → `GET /orders/billing-info/MLB/{id}` (endpoint atual; o legado `/orders/{id}/billing_info` foi depreciado). Busca na ADS por CPF/CNPJ (`GET /clientes?cnpjcpf=`); se não existir, prepara o cadastro e só cadastra com confirmação ("CADASTRAR"), sem inventar dados (IBGE pela consulta `cidades`).
+3. **Configuração comercial** — `/configuracoes/pedidos-ads`: códigos lidos ao vivo da ADS e validados ao salvar.
+4. **Validação e prévia** — pagamento aprovado, pedido não cancelado, todos os itens mapeados, cliente identificado, soma dos itens = vendido no ML = total do pedido, parcelas = total. Prévia com CPF/CNPJ mascarado.
+5. **Envio** — confirmação ("ENVIAR") do mesmo payload visualizado (hash). Só em homologação (`hom.adsapi.com.br`; `ADS_WRITE_DISABLED=true` desliga). `idExterno` = `M` + order_id (≤ 17). Antes do POST consulta o idExterno; timeout/5xx → `UNKNOWN` sem reenvio automático, resolvido por **Conciliar**. Webhooks nunca enviam pedidos.
+
+Tabelas (migration `20261108000000_ads_order_integration`): `marketplace_product_mappings`, `marketplace_order_billing`, `ads_customers`, `ads_order_submissions`, `ads_order_attempts`.

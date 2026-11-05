@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 
-/** Ações de LEITURA do pedido. Não há (de propósito) ação de envio ao ERP nesta fase. */
+/** Ações de LEITURA do pedido no Mercado Livre. O envio à ADS fica no painel "Integração ADS". */
 export function OrderActions({ id, hasRaw }: { id: string; hasRaw: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,9 +40,6 @@ export function OrderActions({ id, hasRaw }: { id: string; hasRaw: boolean }) {
             {raw ? "Ocultar JSON original" : "Ver JSON original (acesso restrito)"}
           </button>
         )}
-        <button className="btn btn-primary btn-sm" type="button" disabled title="Integração com a ADS ainda não habilitada">
-          Enviar para ADS (indisponível nesta fase)
-        </button>
       </div>
       {msg && (
         <div className={`alert ${msg.kind}`} role="status" style={{ marginTop: 10 }}>

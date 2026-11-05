@@ -40,8 +40,16 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
         <span className="muted">Recebidos por notificação (orders_v2) e consultados na API do Mercado Livre</span>
       </div>
       <div className="alert warn" role="note">
-        A integração de escrita com o ERP ADS <strong>ainda não está habilitada</strong>. Nenhum pedido é enviado à ADS nesta fase.
-        &quot;Pronto para ADS&quot; significa apenas que os dados essenciais foram preparados.
+        O envio para a ADS é <strong>manual</strong>, pedido a pedido, e só no ambiente de <strong>homologação</strong>. Nenhum pedido é enviado
+        automaticamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados.
+      </div>
+      <div className="toolbar" style={{ marginBottom: 12 }}>
+        <a className="btn btn-secondary btn-sm" href="/pedidos/mapeamentos">
+          Mapear produtos
+        </a>
+        <a className="btn btn-secondary btn-sm" href="/configuracoes/pedidos-ads">
+          Configuração comercial ADS
+        </a>
       </div>
       <nav className="toolbar" aria-label="Preparação para ADS" style={{ marginBottom: 12 }}>
         <a href="/pedidos" className={`btn btn-sm ${!adsStatus ? "btn-primary" : "btn-secondary"}`}>
