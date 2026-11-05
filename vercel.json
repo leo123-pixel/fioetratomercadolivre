@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "npm run vercel-build",
-  "regions": ["gru1"],
+  "regions": ["iad1"],
   "crons": [
     { "path": "/api/import/worker", "schedule": "0 9 * * *" },
     { "path": "/api/marketplace/scheduler/tick", "schedule": "30 9 * * *" }

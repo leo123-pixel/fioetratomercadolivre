@@ -72,7 +72,7 @@ Projeto publicado: `fioetrato-ml` (time leo123-pixels-projects), produção em *
 URI de callback: **https://fioetrato-ml.vercel.app/api/auth/mercadolivre/callback**.
 `APP_BASE_URL`, `MELI_REDIRECT_URI` e `MELI_PKCE_ENABLED` já estão cadastradas em Production; faltam os segredos (passo 2) e um redeploy.
 
-1. Projeto Vercel com framework Next.js; o `vercel.json` usa `npm run vercel-build` (gera o Prisma Client, aplica `prisma migrate deploy` se `DATABASE_URL` existir, e roda `next build`) e funções em `gru1` (São Paulo).
+1. Projeto Vercel com framework Next.js; o `vercel.json` usa `npm run vercel-build` (gera o Prisma Client, aplica `prisma migrate deploy` se `DATABASE_URL` existir, e roda `next build`) e funções em `iad1` (Washington, EUA), na mesma região do banco Supabase (us-east-1): cada consulta ao banco atravessava o continente quando as funções rodavam em `gru1`.
 2. Em *Settings → Environment Variables* (Production), cadastre todas as variáveis do `.env.example`. Use o tipo **Sensitive** para `MELI_CLIENT_SECRET`, `DATABASE_URL`, `TOKEN_ENCRYPTION_KEY`, `SESSION_SECRET` e `ADMIN_PASSWORD_HASH`.
 3. `APP_BASE_URL` = domínio de produção atribuído pela Vercel; `MELI_REDIRECT_URI` = `APP_BASE_URL` + `/api/auth/mercadolivre/callback`.
 4. Redeploy de produção após salvar as variáveis.
