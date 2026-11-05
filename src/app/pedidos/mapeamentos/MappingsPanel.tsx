@@ -5,6 +5,7 @@ import { useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { formatDateTime } from "@/lib/format";
 import { ProductPicker, type PickedProduct } from "../ProductPicker";
+import { BarcodeSuggestions } from "./BarcodeSuggestions";
 
 interface Group {
   itemId: string;
@@ -83,19 +84,29 @@ function GroupRow({ g, focused, onDone }: { g: Group; focused: boolean; onDone: 
         <tr>
           <td colSpan={6}>
             <div className="card" style={{ margin: 0 }}>
+              <p style={{ marginTop: 0 }}>
+                <strong>1. Procure o produto da ADS</strong> que corresponde a &quot;{g.title ?? g.itemId}&quot;. Digite marca e nome (por exemplo, as primeiras palavras do
+                título), o código do fabricante, o EAN ou o ID ADS.
+              </p>
+              <ProductPicker initialQuery="" onPick={setPicked} />
+              <p>
+                <strong>2. Escolha até onde vale o vínculo:</strong>
+              </p>
               <fieldset style={{ border: 0, padding: 0, margin: "0 0 8px" }}>
-                <legend className="muted">Vincular</legend>
-                <label style={{ marginRight: 12 }}>
-                  <input type="radio" checked={scope === "ITEM"} onChange={() => setScope("ITEM")} /> este anúncio{g.variationId ? " (variação)" : ""} — todos os pedidos
+                <label style={{ display: "block" }}>
+                  <input type="radio" checked={scope === "ITEM"} onChange={() => setScope("ITEM")} /> <strong>Este anúncio{g.variationId ? " (esta variação)" : ""}</strong> — vale para
+                  as {g.orders} venda(s) já recebida(s) e para todas as próximas <em>(recomendado)</em>
                 </label>
-                <label style={{ marginRight: 12, opacity: g.sellerSku ? 1 : 0.5 }}>
-                  <input type="radio" disabled={!g.sellerSku} checked={scope === "SKU"} onChange={() => setScope("SKU")} /> o SKU &quot;{g.sellerSku ?? "—"}&quot; (validado) — todos os anúncios
+                <label style={{ display: "block", opacity: g.sellerSku ? 1 : 0.5 }}>
+                  <input type="radio" disabled={!g.sellerSku} checked={scope === "SKU"} onChange={() => setScope("SKU")} /> Pelo SKU &quot;{g.sellerSku ?? "—"}&quot; — vale para
+                  qualquer anúncio com esse SKU
                 </label>
-                <label>
-                  <input type="radio" checked={scope === "ORDER_LINE"} onChange={() => setScope("ORDER_LINE")} /> só a linha de um pedido (#{g.sampleOrderId})
+                <label style={{ display: "block" }}>
+                  <input type="radio" checked={scope === "ORDER_LINE"} onChange={() => setScope("ORDER_LINE")} /> Só em uma venda (pedido #{g.sampleOrderId}) — exceção, não é
+                  reaproveitado
                 </label>
               </fieldset>
-              <ProductPicker initialQuery={g.sellerSku ?? ""} onPick={setPicked} />
+              {!picked && <p className="muted">Selecione um produto na busca acima para confirmar.</p>}
               {picked && (
                 <p>
                   Produto escolhido: <strong>#{picked.adsProductId}</strong> · {picked.name}{" "}
@@ -133,12 +144,15 @@ export function MappingsPanel(props: { mappings: Mapping[]; unmapped: Group[]; f
           {feedback}
         </div>
       )}
+      <div className="alert info">
+        Para enviar um pedido à ADS, cada item precisa do <strong>código do produto na ADS</strong>. Os anúncios abaixo foram vendidos, mas o integrador não sabe a
+        qual produto da ADS cada um corresponde (foram criados fora do integrador e o SKU não é o código da ADS). Vincule <strong>uma vez por anúncio</strong>:
+        as vendas já recebidas e as futuras passam a usar o produto escolhido.
+      </div>
+      {props.unmapped.length > 0 && <BarcodeSuggestions onDone={done} />}
       <section className="card">
         <h2>Itens vendidos sem produto ADS ({props.unmapped.length})</h2>
-        <p className="muted">
-          Ordem automática: anúncio publicado pelo integrador → anúncio vinculado aqui → User Product → SKU &quot;ADS-&lt;produto&gt;&quot; → SKU validado
-          aqui. O que não se encaixa fica nesta lista.
-        </p>
+        <p className="muted">Ordenados pelo número de vendas. Clique em Mapear, procure o produto da ADS e confirme.</p>
         {props.unmapped.length === 0 ? (
           <p className="muted">Nenhum item pendente.</p>
         ) : (

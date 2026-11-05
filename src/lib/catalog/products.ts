@@ -94,11 +94,17 @@ export async function listProducts(sql: Sql, filters: ProductFilters): Promise<P
 
   const q = filters.q?.trim();
   if (q) {
-    const like = add(`%${escapeLike(q)}%`);
     const exact = add(q);
     const digits = /^\d+$/.test(q) ? `OR p.ads_product_id = ${add(Number(q) <= 2_147_483_647 ? Number(q) : -1)}::int` : "";
-    where.push(`(p.name_original ILIKE ${like} OR p.name_custom ILIKE ${like} OR p.manufacturer_code ILIKE ${like}
-      OR p.ean = ${exact}::text OR p.dun14 = ${exact}::text ${digits})`);
+    // Cada palavra digitada precisa aparecer (em qualquer ordem) no nome ou no código do fabricante.
+    const words = q.split(/\s+/).filter(Boolean).slice(0, 8);
+    const allWords = words
+      .map((w) => {
+        const like = add(`%${escapeLike(w)}%`);
+        return `(p.name_original ILIKE ${like} OR p.name_custom ILIKE ${like} OR p.manufacturer_code ILIKE ${like})`;
+      })
+      .join(" AND ");
+    where.push(`((${allWords}) OR p.ean = ${exact}::text OR p.dun14 = ${exact}::text ${digits})`);
   }
   if (filters.supplierId !== undefined) where.push(`p.supplier_id = ${add(filters.supplierId)}::int`);
   if (filters.divisionId) where.push(`p.division_id = ${add(filters.divisionId)}::text`);

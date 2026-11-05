@@ -1,5 +1,7 @@
 import "server-only";
+import { meliRequest } from "../meli/api";
 import type { Sql } from "../sql";
+import { withReadRetry } from "./errors";
 import { adsStatusOf, mappingStatusOf } from "./order-status";
 
 /**
@@ -145,6 +147,8 @@ export interface MappingInput {
   notes?: string | null;
   /** Substitui um vínculo ativo existente para a mesma chave. */
   replace?: boolean;
+  /** false = não reaplica nos pedidos agora (usado no lote, que reaplica uma vez no fim). */
+  remap?: boolean;
 }
 
 /**
@@ -187,7 +191,7 @@ export async function saveMapping(sql: Sql, m: MappingInput): Promise<{ mappingI
          VALUES ('ITEM', $1::text, $2::text, $3::int, $4::int, $5::text, $6::text) RETURNING id::text AS id`,
         [m.itemId, variation, product.id, product.adsProductId, m.createdBy, m.notes ?? null],
       );
-      return { mappingId: row.id, remapped: await remapOrders(tx) };
+      return { mappingId: row.id, remapped: m.remap === false ? { lines: 0, mapped: 0, orders: 0 } : await remapOrders(tx) };
     }
     const sku = m.sellerSku?.trim();
     if (!sku || sku.length > 120) throw new MappingError("invalid_sku", "SKU inválido");
@@ -232,4 +236,69 @@ export async function listUnmappedGroups(sql: Sql) {
      WHERE i.mapping_status = 'UNMAPPED'
      GROUP BY 1, 2, 3 ORDER BY orders DESC, "itemId" LIMIT 300`,
   );
+}
+
+export interface BarcodeSuggestion {
+  itemId: string;
+  variationId: string;
+  sellerSku: string | null;
+  title: string | null;
+  orders: number;
+  gtins: string[];
+  candidates: { productId: number; adsProductId: number; name: string; ean: string | null }[];
+}
+
+const gtinDigits = (v: unknown): string[] =>
+  String(v ?? "")
+    .split(/[,;\s]+/)
+    .map((x) => x.replace(/\D/g, ""))
+    .filter((x) => x.length >= 8 && x.length <= 14);
+
+type MlAttr = { id?: string; value_name?: string | null; values?: { name?: string | null }[] };
+function gtinsOf(attrs: MlAttr[] | undefined): string[] {
+  const out: string[] = [];
+  for (const a of attrs ?? []) {
+    if (a?.id !== "GTIN") continue;
+    out.push(...gtinDigits(a.value_name));
+    for (const v of a.values ?? []) out.push(...gtinDigits(v?.name));
+  }
+  return out;
+}
+
+/**
+ * Sugestões por código de barras: lê o GTIN dos anúncios vendidos (GET /items, somente leitura) e
+ * procura o produto ADS ativo com o mesmo EAN/DUN-14. É só sugestão: o administrador confirma.
+ */
+export async function suggestByBarcode(sql: Sql): Promise<BarcodeSuggestion[]> {
+  const groups = (await listUnmappedGroups(sql)) as unknown as Omit<BarcodeSuggestion, "gtins" | "candidates">[];
+  const ids = [...new Set(groups.map((g) => g.itemId).filter((id) => /^MLB\d{1,15}$/.test(id)))];
+  const items = new Map<string, { attributes?: MlAttr[]; variations?: { id?: number | string; attributes?: MlAttr[]; attribute_combinations?: MlAttr[] }[] }>();
+  for (let i = 0; i < ids.length; i += 20) {
+    const chunk = ids.slice(i, i + 20);
+    const { data } = await withReadRetry(() =>
+      meliRequest<{ code: number; body: { id?: string; attributes?: MlAttr[]; variations?: [] } }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: "id,attributes,variations" } }),
+    );
+    for (const e of Array.isArray(data) ? data : []) if (e.code === 200 && e.body?.id) items.set(e.body.id, e.body);
+  }
+  const out: BarcodeSuggestion[] = [];
+  for (const g of groups) {
+    const it = items.get(g.itemId);
+    let gtins: string[] = [];
+    if (it) {
+      const variation = g.variationId ? it.variations?.find((v) => String(v.id) === g.variationId) : undefined;
+      gtins = variation ? [...gtinsOf(variation.attributes), ...gtinsOf(variation.attribute_combinations)] : [];
+      if (!gtins.length) gtins = gtinsOf(it.attributes);
+    }
+    gtins = [...new Set(gtins.map((x) => x.replace(/^0+/, "")))];
+    const candidates = gtins.length
+      ? await sql.query<{ productId: number; adsProductId: number; name: string; ean: string | null }>(
+          `SELECT id AS "productId", ads_product_id AS "adsProductId", COALESCE(name_custom, name_original) AS name, ean
+           FROM products WHERE NOT inactive AND (ltrim(ean, '0') = ANY($1::text[]) OR ltrim(dun14, '0') = ANY($1::text[]))
+           ORDER BY ads_product_id LIMIT 5`,
+          [gtins],
+        )
+      : [];
+    out.push({ itemId: g.itemId, variationId: g.variationId, sellerSku: g.sellerSku, title: g.title, orders: Number(g.orders), gtins, candidates });
+  }
+  return out;
 }

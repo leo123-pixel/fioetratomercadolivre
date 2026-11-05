@@ -448,3 +448,42 @@ describe("envio manual para a ADS (homologação)", () => {
     expect(w.adsPosts).toHaveLength(0); // consultar estado nunca escreve na ADS
   });
 });
+
+describe("mapeamento assistido: busca por palavras e sugestões por código de barras", () => {
+  it("busca de produto aceita palavras em qualquer ordem", async () => {
+    mockWorld();
+    await t.sql().execute(`INSERT INTO products (ads_product_id, name_original, ean, raw_payload) VALUES (7001, 'MATRIX SPRAY MIRACLE CREATOR 190ML', '7899706196442', '{}')`);
+    const { GET: productsList } = await import("@/app/api/products/route");
+    const search = async (q: string) =>
+      (await (await productsList(makeRequest(`/api/products?q=${encodeURIComponent(q)}`, { cookies: adminCookies() }))).json()).items.map((i: { adsProductId: number }) => i.adsProductId);
+    expect(await search("spray matrix miracle")).toEqual([7001]);
+    expect(await search("matrix 190ml")).toEqual([7001]);
+    expect(await search("matrix shampoo")).toEqual([]);
+  });
+
+  it("sugere o produto ADS com o mesmo EAN do GTIN do anúncio e confirma em lote", async () => {
+    const w = mockWorld();
+    const id = await readyOrder(w, "2000000000000700", { order_items: [{ item: { id: "MLB7542614106", title: "Spray Matrix", seller_sku: "matrix-miracle" }, quantity: 1, unit_price: 99.9 }] });
+    await t.sql().execute(`INSERT INTO products (ads_product_id, name_original, ean, raw_payload) VALUES (7001, 'MATRIX SPRAY MIRACLE CREATOR 190ML', '07899706196442', '{}')`);
+    const original = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.origin === "https://api.mercadolibre.com" && url.pathname === "/items") {
+          return new Response(JSON.stringify([{ code: 200, body: { id: "MLB7542614106", attributes: [{ id: "GTIN", value_name: "7899706196442" }] } }]), { status: 200 });
+        }
+        return original(input, init);
+      }),
+    );
+    const { suggestByBarcode } = await import("@/lib/marketplace/mappings");
+    const [s] = await suggestByBarcode(t.sql());
+    expect(s).toMatchObject({ itemId: "MLB7542614106", gtins: ["7899706196442"], candidates: [{ adsProductId: 7001 }] });
+    const { POST: bulk } = await import("@/app/api/mappings/bulk/route");
+    const res = await bulk(makeRequest("/api/mappings/bulk", { method: "POST", cookies: adminCookies(), headers: { origin: BASE }, body: { items: [{ itemId: "MLB7542614106", productId: s.candidates[0].productId }] } }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).remapped).toMatchObject({ mapped: 1, orders: 1 });
+    const [o] = await t.sql().query<{ mapping: string }>(`SELECT mapping_status AS mapping FROM marketplace_order_inbox WHERE id = $1`, [id]);
+    expect(o.mapping).toBe("MAPPED");
+  });
+});
