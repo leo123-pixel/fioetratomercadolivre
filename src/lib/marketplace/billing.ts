@@ -137,6 +137,8 @@ export interface StoredBilling extends BillingData {
   status: "COMPLETE" | "INCOMPLETE" | "UNAVAILABLE";
   missing: string[];
   fetchedAt: Date;
+  /** Município do endereço já resolvido (código IBGE), guardado no pedido. */
+  cityIbge?: { code: string; name: string; source: "NOME" | "CEP" | "ADS" | "MANUAL" } | null;
 }
 
 /** Consulta os dados fiscais no ML e grava (substituindo a leitura anterior). */
@@ -168,20 +170,40 @@ export async function fetchOrderBilling(sql: Sql, orderInboxId: string): Promise
      VALUES ($1::bigint, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::jsonb, $10::jsonb, now())
      ON CONFLICT (order_id) DO UPDATE SET billing_info_id = EXCLUDED.billing_info_id, status = EXCLUDED.status, doc_type = EXCLUDED.doc_type,
        doc_number = EXCLUDED.doc_number, name = EXCLUDED.name, state_registration = EXCLUDED.state_registration,
-       taxpayer_type = EXCLUDED.taxpayer_type, address = EXCLUDED.address, missing = EXCLUDED.missing, fetched_at = now()`,
+       taxpayer_type = EXCLUDED.taxpayer_type, address = EXCLUDED.address, missing = EXCLUDED.missing, fetched_at = now(),
+       -- Município escolhido pelo operador é mantido; o resolvido automaticamente é refeito (o endereço pode ter mudado).
+       city_ibge = CASE WHEN marketplace_order_billing.city_ibge_source = 'MANUAL' THEN marketplace_order_billing.city_ibge END,
+       city_ibge_name = CASE WHEN marketplace_order_billing.city_ibge_source = 'MANUAL' THEN marketplace_order_billing.city_ibge_name END,
+       city_ibge_source = CASE WHEN marketplace_order_billing.city_ibge_source = 'MANUAL' THEN 'MANUAL' END`,
     [orderInboxId, billingId, status, data.docType, data.docNumber, data.name, data.stateRegistration, data.taxpayerType, JSON.stringify(data.address), JSON.stringify(missing)],
   );
-  return { ...data, status, missing, fetchedAt: new Date() };
+  return (await getOrderBilling(sql, orderInboxId))!;
 }
+
+export type CityIbgeSource = "NOME" | "CEP" | "ADS" | "MANUAL";
 
 export async function getOrderBilling(sql: Sql, orderInboxId: string): Promise<StoredBilling | null> {
   const [b] = await sql.query<Record<string, unknown>>(
     `SELECT billing_info_id AS "billingInfoId", status, doc_type AS "docType", doc_number AS "docNumber", name,
-            state_registration AS "stateRegistration", taxpayer_type AS "taxpayerType", address, missing, fetched_at AS "fetchedAt"
+            state_registration AS "stateRegistration", taxpayer_type AS "taxpayerType", address, missing, fetched_at AS "fetchedAt",
+            city_ibge AS "cityIbgeCode", city_ibge_name AS "cityIbgeName", city_ibge_source AS "cityIbgeSource"
      FROM marketplace_order_billing WHERE order_id = $1::bigint`,
     [orderInboxId],
   );
-  return (b as unknown as StoredBilling) ?? null;
+  if (!b) return null;
+  const { cityIbgeCode, cityIbgeName, cityIbgeSource, ...rest } = b;
+  return {
+    ...(rest as unknown as StoredBilling),
+    cityIbge: cityIbgeCode ? { code: String(cityIbgeCode), name: String(cityIbgeName ?? ""), source: cityIbgeSource as CityIbgeSource } : null,
+  };
+}
+
+/** Guarda o município (código IBGE) do endereço do pedido. */
+export async function setOrderBillingCity(sql: Sql, orderInboxId: string, city: { code: string; name: string; source: CityIbgeSource }): Promise<void> {
+  await sql.execute(
+    `UPDATE marketplace_order_billing SET city_ibge = $2::text, city_ibge_name = $3::text, city_ibge_source = $4::text WHERE order_id = $1::bigint`,
+    [orderInboxId, city.code, city.name.slice(0, 80), city.source],
+  );
 }
 
 /** CPF/CNPJ mascarado para telas e logs: 123.***.***-09. */

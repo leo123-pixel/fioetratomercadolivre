@@ -2,7 +2,8 @@ import { z } from "zod";
 import { adminHandler, type RouteContext } from "@/lib/api";
 import { adsEnvironment, assertAdsWriteAllowed } from "@/lib/ads/client";
 import { getAdsOrderSettings } from "@/lib/ads/commercial";
-import { buildCustomerDraft, createAdsCustomer, lookupAdsCustomer } from "@/lib/ads/customers";
+import { buildCustomerDraft, createAdsCustomer, lookupAdsCustomer, setCustomerCity } from "@/lib/ads/customers";
+import { municipiosByUf } from "@/lib/ads/ibge";
 import { buildAdsOrder, sanitizePayload } from "@/lib/ads/order-payload";
 import { listAttempts, listSubmissions, reconcileSubmission, refreshAdsStatus, sendOrderToAds } from "@/lib/ads/order-submission";
 import { getAdminSession } from "@/lib/auth/admin";
@@ -38,7 +39,9 @@ export const GET = adminHandler(
     const settings = await getAdsOrderSettings(sql);
     const built = await buildAdsOrder(sql, id, { settings });
     const billing = built.billing;
-    const draft = billing && built.customer && built.customer.status !== "FOUND" && built.customer.status !== "CREATED" ? await buildCustomerDraft(billing, settings).catch(() => null) : null;
+    const draft = billing && built.customer && built.customer.status !== "FOUND" && built.customer.status !== "CREATED" ? await buildCustomerDraft(billing, settings, { sql, orderInboxId: id }).catch(() => null) : null;
+    // Município não resolvido: lista oficial da UF para o operador escolher.
+    const cityOptions = draft && !draft.city && billing?.address.state ? municipiosByUf(billing.address.state).map((m) => ({ code: m.code, name: m.name })) : null;
     return jsonNoStore({
       environment: adsEnvironment(),
       externalId: built.externalId,
@@ -47,7 +50,7 @@ export const GET = adminHandler(
       payloadHash: built.ok ? built.payloadHash : null,
       billing: billing ? { ...billing, docNumber: reveal ? billing.docNumber : maskDocument(billing.docNumber) } : null,
       customer: built.customer ? { ...built.customer, cnpjCpf: maskDocument(built.customer.cnpjCpf), draft: undefined } : null,
-      customerDraft: draft ? { missing: draft.missing, request: { ...draft.request, cnpjCpf: maskDocument(String(draft.request.cnpjCpf ?? "")) } } : null,
+      customerDraft: draft ? { missing: draft.missing, city: draft.city, cityOptions, request: { ...draft.request, cnpjCpf: maskDocument(String(draft.request.cnpjCpf ?? "")) } } : null,
       submissions: (await listSubmissions(sql, id)).map((s) => ({ ...s, payload: undefined })),
       attempts: await listAttempts(sql, id),
     });
@@ -60,6 +63,7 @@ const action = z.discriminatedUnion("action", [
   z.object({ action: z.literal("customer_lookup") }),
   z.object({ action: z.literal("customer_create"), confirm: z.literal("CADASTRAR") }),
   z.object({ action: z.literal("send"), confirm: z.enum(["ENVIAR", "ENVIAR PRODUCAO"]), payloadHash: z.string().regex(/^[a-f0-9]{64}$/) }),
+  z.object({ action: z.literal("set_city"), ibge: z.string().regex(/^d{7}$/) }),
   z.object({ action: z.literal("reconcile") }),
   z.object({ action: z.literal("status") }),
 ]);
@@ -97,6 +101,12 @@ export const POST = adminHandler(
         if (b.data.confirm !== expected) return errorJson(400, "confirmation_required", `Confirme digitando ${expected}`);
         const s = await sendOrderToAds(sql, id, { payloadHash: b.data.payloadHash, requestedBy: by });
         return jsonNoStore({ submission: { ...s, payload: undefined } });
+      }
+      case "set_city": {
+        // Só grava no integrador (endereço do pedido); nada é enviado à ADS aqui.
+        const city = await setCustomerCity(sql, id, b.data.ibge);
+        logger.info("Município do endereço escolhido pelo operador", { orderInboxId: id, ibge: city.code });
+        return jsonNoStore({ city });
       }
       case "reconcile": {
         const s = await reconcileSubmission(sql, id);

@@ -657,6 +657,67 @@ describe("código IBGE da cidade", () => {
     expect(await resolveIbge("Cidade Inexistente", "SP")).toBeNull();
     expect(hosts.every((h) => h !== "servicodados.ibge.gov.br")).toBe(true);
   });
+
+  it("distrito informado como cidade: resolve pelo CEP, guarda no pedido e não consulta de novo", async () => {
+    const w = mockWorld();
+    useHomologation();
+    w.billing = {
+      buyer: { billing_info: { name: "Lilian", last_name: "Paiva", identification: { type: "CPF", number: CPF }, address: { street_name: "Avenida Jk", street_number: "20", city_name: "Realeza", state: { code: "BR-MG" }, zip_code: "36909300", neighborhood: "realeza" } } },
+    };
+    const id = await readyOrder(w);
+    const original = globalThis.fetch;
+    const cepCalls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.hostname === "brasilapi.com.br") {
+          cepCalls.push(url.pathname);
+          return new Response(JSON.stringify({ cep: "36909300", state: "MG", city: "Manhuaçu", ibge: { city: "3139409", state: "31" } }), { status: 200 });
+        }
+        if (url.hostname === "viacep.com.br") {
+          cepCalls.push(url.pathname);
+          return new Response("{}", { status: 503 });
+        }
+        return original(input, init);
+      }),
+    );
+    const { buildCustomerDraft } = await import("@/lib/ads/customers");
+    const { getOrderBilling } = await import("@/lib/marketplace/billing");
+    const draft = await buildCustomerDraft((await getOrderBilling(t.sql(), id))!, SETTINGS, { sql: t.sql(), orderInboxId: id });
+    expect(draft.missing).not.toContain("endereco.codigoIbge");
+    expect((draft.request.endereco as { codigoIbge: string }).codigoIbge).toBe("3139409");
+    expect(draft.city).toMatchObject({ code: "3139409", name: "Manhuaçu", source: "CEP", billingCity: "Realeza" });
+    // Só o CEP sai do integrador.
+    expect(cepCalls.every((p) => p.endsWith("36909300") || p.endsWith("36909300/json/"))).toBe(true);
+    const stored = await getOrderBilling(t.sql(), id);
+    expect(stored?.cityIbge).toMatchObject({ code: "3139409", source: "CEP" });
+    cepCalls.length = 0;
+    await buildCustomerDraft(stored!, SETTINGS, { sql: t.sql(), orderInboxId: id });
+    expect(cepCalls).toEqual([]);
+  });
+
+  it("CEP sem resposta: escolha manual (lista oficial da UF), mantida ao reconsultar os dados fiscais", async () => {
+    const w = mockWorld();
+    useHomologation();
+    w.billing = {
+      buyer: { billing_info: { name: "Lilian", last_name: "Paiva", identification: { type: "CPF", number: CPF }, address: { street_name: "Avenida Jk", street_number: "20", city_name: "Realeza", state: { code: "BR-MG" }, zip_code: "36909300", neighborhood: "realeza" } } },
+    };
+    const id = await readyOrder(w);
+    const { buildCustomerDraft, setCustomerCity } = await import("@/lib/ads/customers");
+    const { getOrderBilling } = await import("@/lib/marketplace/billing");
+    // Nenhuma fonte de CEP simulada responde: não inventa.
+    const draft = await buildCustomerDraft((await getOrderBilling(t.sql(), id))!, SETTINGS, { sql: t.sql(), orderInboxId: id });
+    expect(draft.city).toBeNull();
+    expect(draft.missing).toContain("endereco.codigoIbge");
+    await expect(setCustomerCity(t.sql(), id, "3550308")).rejects.toMatchObject({ code: "invalid_city" }); // São Paulo/SP ≠ MG
+    await expect(setCustomerCity(t.sql(), id, "9999999")).rejects.toMatchObject({ code: "invalid_city" });
+    expect(await setCustomerCity(t.sql(), id, "3139409")).toMatchObject({ name: "Manhuaçu", source: "MANUAL" });
+    await fetchOrderBilling(t.sql(), id);
+    const again = await buildCustomerDraft((await getOrderBilling(t.sql(), id))!, SETTINGS);
+    expect(again.city).toMatchObject({ code: "3139409", source: "MANUAL" });
+    expect(again.missing).not.toContain("endereco.codigoIbge");
+  });
 });
 
 describe("ADS momentaneamente indisponível", () => {

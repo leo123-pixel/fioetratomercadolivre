@@ -29,7 +29,12 @@ interface State {
     fetchedAt: string;
   } | null;
   customer: { status: string; adsClienteId: number | null; lastError: string | null; checkedAt: string | null } | null;
-  customerDraft: { missing: string[]; request: unknown } | null;
+  customerDraft: {
+    missing: string[];
+    request: unknown;
+    city: { code: string; name: string; source: string; via?: string; billingCity: string | null } | null;
+    cityOptions: { code: string; name: string }[] | null;
+  } | null;
   submissions: { id: string; externalId: string; environment: string; status: string; adsPedidoId: number | null; adsStatus: string | null; attempts: number; requestedBy: string; lastError: string | null; createdAt: string; completedAt: string | null }[];
   attempts: { id: string; operation: string; httpStatus: number | null; error: string | null; durationMs: number | null; createdAt: string; response: unknown }[];
 }
@@ -43,6 +48,43 @@ const CUSTOMER_LABEL: Record<string, string> = {
   UNKNOWN: "Resultado do cadastro incerto",
   ERROR: "Erro na consulta",
 };
+const CITY_SOURCE: Record<string, string> = {
+  NOME: "pelo nome da cidade (lista oficial do IBGE)",
+  CEP: "pelo CEP",
+  ADS: "pelo cadastro de cidades da ADS",
+  MANUAL: "escolhido manualmente",
+};
+
+/** Escolha manual do município (lista oficial do IBGE da UF do endereço). */
+function CityPicker({ options, billingCity, disabled, onSave }: { options: { code: string; name: string }[]; billingCity: string | null; disabled: boolean; onSave: (code: string) => void }) {
+  const [q, setQ] = useState("");
+  const [code, setCode] = useState("");
+  const norm = (t: string) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const filtered = q ? options.filter((o) => norm(o.name).includes(norm(q))) : options;
+  return (
+    <div style={{ margin: "8px 0", padding: 10, border: "1px solid var(--warn-fg)", borderRadius: 6 }}>
+      <strong>Município não identificado automaticamente</strong>
+      <p className="muted" style={{ margin: "4px 0" }}>
+        O Mercado Livre informou a cidade &quot;{billingCity ?? "—"}&quot;, que não está na lista oficial do IBGE, e o CEP não foi confirmado. Escolha o município correto (confira o CEP no endereço acima).
+      </p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input className="input" placeholder="Filtrar município" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 220 }} />
+        <select className="input" value={code} onChange={(e) => setCode(e.target.value)} style={{ maxWidth: 280 }}>
+          <option value="">Selecione ({filtered.length})</option>
+          {filtered.slice(0, 500).map((o) => (
+            <option key={o.code} value={o.code}>
+              {o.name} — {o.code}
+            </option>
+          ))}
+        </select>
+        <button className="btn btn-secondary btn-sm" type="button" disabled={disabled || !code} onClick={() => onSave(code)}>
+          Usar este município
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const SUB_TONE: Record<string, string> = { SENT: "ok", SENDING: "info", UNKNOWN: "warn", FAILED: "danger", CANCELED: "" };
 
 export function AdsPanel({ id }: { id: string }) {
@@ -189,6 +231,21 @@ export function AdsPanel({ id }: { id: string }) {
             <p style={{ color: "var(--warn-fg)" }}>Não pode ser cadastrado: faltam {s.customerDraft.missing.join(", ")}. Nenhum dado é inventado.</p>
           ) : (
             <p className="muted">Confira os dados antes de cadastrar na ADS.</p>
+          )}
+          {s.customerDraft.city && (
+            <p className="muted" style={{ margin: "4px 0" }}>
+              Município: <strong>{s.customerDraft.city.name}</strong> (IBGE {s.customerDraft.city.code}), {CITY_SOURCE[s.customerDraft.city.source] ?? s.customerDraft.city.source}
+              {s.customerDraft.city.via ? ` — ${s.customerDraft.city.via}` : ""}
+              {s.customerDraft.city.billingCity && s.customerDraft.city.billingCity.toLowerCase() !== s.customerDraft.city.name.toLowerCase() ? `. O ML informou "${s.customerDraft.city.billingCity}" (distrito/bairro ou outra grafia).` : "."}
+            </p>
+          )}
+          {!s.customerDraft.city && s.customerDraft.cityOptions && (
+            <CityPicker
+              options={s.customerDraft.cityOptions}
+              billingCity={(s.billing?.address.city as string | null) ?? null}
+              disabled={busy !== null}
+              onSave={(code) => void act("city", { action: "set_city", ibge: code }, () => "Município salvo no pedido.")}
+            />
           )}
           <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.8rem" }}>{JSON.stringify(s.customerDraft.request, null, 2)}</pre>
           <button

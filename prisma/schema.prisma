@@ -781,6 +781,10 @@ model OrderBilling {
   address           Json?
   missing           Json     @default("[]")
   fetchedAt         DateTime @default(now()) @map("fetched_at") @db.Timestamptz(3)
+  /// Código IBGE do município do endereço (NOME, CEP, ADS ou MANUAL); o manual é mantido ao reconsultar.
+  cityIbge          String?  @map("city_ibge")
+  cityIbgeName      String?  @map("city_ibge_name")
+  cityIbgeSource    String?  @map("city_ibge_source")
 
   @@map("marketplace_order_billing")
 }
