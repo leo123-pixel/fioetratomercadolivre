@@ -49,6 +49,8 @@ interface World {
   mlCalls: { method: string; path: string }[];
   postMode: ("ok" | "timeout" | "400" | "500" | "timeout_created")[];
   nextPedido: number;
+  /** GET /packs/{id} do ML falha (indisponível). */
+  packDown: boolean;
 }
 
 /** ML (somente leitura) + ADS simulados em um único fetch. Nenhuma rede real. */
@@ -73,6 +75,7 @@ function mockWorld(over: Partial<World> = {}): World {
     mlCalls: [],
     postMode: [],
     nextPedido: 9001,
+    packDown: false,
     ...over,
   };
   const json = (b: unknown, status = 200) => new Response(b === undefined ? null : JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
@@ -87,6 +90,12 @@ function mockWorld(over: Partial<World> = {}): World {
         const o = url.pathname.match(/^\/orders\/(\d+)$/);
         if (o) return w.orders.has(o[1]) ? json(w.orders.get(o[1])) : json({ message: "not found" }, 404);
         if (url.pathname.startsWith("/orders/billing-info/MLB/")) return json(w.billing);
+        const pk = url.pathname.match(/^\/packs\/(\d+)$/);
+        if (pk) {
+          if (w.packDown) return json({ message: "erro" }, 500);
+          const orders = [...w.orders.values()].filter((x) => String(x.pack_id) === pk[1]).map((x) => ({ id: x.id }));
+          return orders.length ? json({ id: Number(pk[1]), status: "released", orders, shipment: { id: 48421550402 } }) : json({ message: "not found" }, 404);
+        }
         if (url.pathname.startsWith("/shipments/")) return json({ message: "not found" }, 404);
         return json({ message: "não simulado" }, 599);
       }
@@ -168,7 +177,8 @@ async function readyOrder(w: World, orderId = "2000019348156016", over: Record<s
   await seedConnection({ expiresInMs: 3_600_000 });
   if (!(await t.sql().query(`SELECT 1 FROM marketplace_listings WHERE marketplace_item_id = 'MLB1000'`)).length) await seedPublishedListing("MLB1000", 1804);
   await saveSettings();
-  w.orders.set(orderId, mlOrder(orderId, { pack_id: 2000015871728059, shipping: null, buyer: { id: 777, nickname: "COMPRADOR", billing_info: { id: "BI123" } }, ...over }));
+  // Cada pedido no seu próprio pack (o ML põe pack_id em quase todos), como numa compra avulsa.
+  w.orders.set(orderId, mlOrder(orderId, { pack_id: Number(`1${orderId.slice(1)}`), shipping: null, buyer: { id: 777, nickname: "COMPRADOR", billing_info: { id: "BI123" } }, ...over }));
   if (!w.clientes.some((c) => c.cnpjCpf === CPF)) w.clientes.push({ clienteId: 321, cnpjCpf: CPF });
   await processOrder(t.sql(), orderId);
   const [{ id }] = await t.sql().query<{ id: string }>(`SELECT id::text AS id FROM marketplace_order_inbox WHERE marketplace_order_id = $1`, [orderId]);
@@ -320,7 +330,8 @@ describe("validação do pedido", () => {
     expect(built.externalId).toBe("M2000019348156016");
     expect(built.externalId.length).toBeLessThanOrEqual(17);
     expect(externalIdFor("123456789012345678901")).toHaveLength(17);
-    expect(built.payload).toMatchObject({ total: 99.9, desconto: 0, frete: 0, pedidoCliente: "2000019348156016", observacao: "ML 2000019348156016 pack 2000015871728059" });
+    expect(built.payload).toMatchObject({ total: 99.9, desconto: 0, frete: 0, pedidoCliente: "2000019348156016", observacao: "ML 2000019348156016 pack 1000019348156016" });
+    expect(built.group).toMatchObject({ isPack: false, packId: "1000019348156016", leadId: id });
     expect(built.payload!.parcelas).toEqual([{ parcela: 1, vencimento: expect.stringMatching(/^2026-12-05/), valor: 99.9 }]);
   });
 
@@ -712,7 +723,13 @@ describe("código IBGE da cidade", () => {
     expect(draft.missing).toContain("endereco.codigoIbge");
     await expect(setCustomerCity(t.sql(), id, "3550308")).rejects.toMatchObject({ code: "invalid_city" }); // São Paulo/SP ≠ MG
     await expect(setCustomerCity(t.sql(), id, "9999999")).rejects.toMatchObject({ code: "invalid_city" });
-    expect(await setCustomerCity(t.sql(), id, "3139409")).toMatchObject({ name: "Manhuaçu", source: "MANUAL" });
+    // Pela rota (a tela usa esta ação): o código de 7 dígitos é aceito.
+    const res = await adsActionRoute(
+      makeRequest(`/api/orders/${id}/ads`, { method: "POST", cookies: adminCookies(), headers: { origin: BASE }, body: { action: "set_city", ibge: "3139409" } }),
+      ctx({ id }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).city).toMatchObject({ name: "Manhuaçu", source: "MANUAL" });
     await fetchOrderBilling(t.sql(), id);
     const again = await buildCustomerDraft((await getOrderBilling(t.sql(), id))!, SETTINGS);
     expect(again.city).toMatchObject({ code: "3139409", source: "MANUAL" });
@@ -764,5 +781,97 @@ describe("ADS lenta", () => {
     );
     await expect(adsCall("GET", "prazos")).rejects.toMatchObject({ kind: "timeout" });
     expect(calls).toBe(1);
+  });
+});
+
+describe("pack com vários pedidos (compra no carrinho)", () => {
+  const PACK = "2000015849433181";
+  const LEAD = "2000019324431820"; // menor order_id: guarda o comprador e o envio
+  const OTHER = "2000019324435196";
+  const paid = (id: number, amount: number) => [
+    { id, status: "approved", status_detail: "accredited", payment_type: "account_money", payment_method_id: "account_money", installments: 1, transaction_amount: amount, total_paid_amount: amount, shipping_cost: 0, date_created: "2026-11-05T12:00:30.000-03:00", date_approved: "2026-11-05T12:00:40.000-03:00", date_last_modified: "2026-11-05T12:00:40.000-03:00" },
+  ];
+  const lead = () =>
+    mlOrder(LEAD, {
+      pack_id: Number(PACK),
+      order_items: [{ item: { id: "MLB2000", title: "Produto 2", seller_sku: null }, quantity: 2, unit_price: 15 }],
+      total_amount: 30,
+      paid_amount: 30,
+      payments: paid(72, 30),
+      shipping: { id: 48421550402 },
+      buyer: { id: 777, nickname: "COMPRADOR", billing_info: { id: "BI123" } },
+    });
+  const other = { pack_id: Number(PACK), order_items: [{ item: { id: "MLB1000", title: "Lápis", seller_sku: null }, quantity: 1, unit_price: 16.09 }], total_amount: 16.09, paid_amount: 16.09, payments: paid(71, 16.09), shipping: { id: 48421550402 } };
+
+  it("vira UM pedido na ADS: itens de todos, frete do envio compartilhado uma vez, um único envio por qualquer pedido", async () => {
+    const w = mockWorld();
+    useHomologation();
+    await seedPublishedListing("MLB2000", 1805);
+    w.orders.set(LEAD, lead()); // ainda não chegou ao integrador
+    const idOther = await readyOrder(w, OTHER, other);
+    await saveSettings({ ...SETTINGS, freightMode: "buyer_paid" });
+
+    // Conferência no ML importa o pedido que faltava; o comprador fica no pedido principal.
+    const first = await buildAdsOrder(t.sql(), idOther);
+    expect(first.group).toMatchObject({ isPack: true, packId: PACK, leadOrderId: LEAD });
+    expect(first.group.orders.map((o) => o.orderId)).toEqual([LEAD, OTHER]);
+    expect(first.issues.map((i) => i.code)).toContain("billing_missing");
+    await fetchOrderBilling(t.sql(), first.group.leadId);
+
+    // Os dois pedidos apontam o mesmo envio de R$ 5,99: entra uma vez só.
+    await t.sql().execute(`UPDATE marketplace_order_inbox SET shipping_amount = 5.99 WHERE pack_id = $1`, [PACK]);
+    const built = await buildAdsOrder(t.sql(), idOther);
+    expect(built.issues.filter((i) => i.blocking)).toEqual([]);
+    expect(built.externalId).toBe(`P${PACK}`);
+    expect(built.totals).toMatchObject({ itemsAds: 46.09, mlTotal: 46.09, mlPaid: 46.09, adsTotal: 52.08 });
+    expect(built.payload).toMatchObject({ idExterno: `P${PACK}`, frete: 5.99, total: 52.08, pedidoCliente: PACK, observacao: `ML pack ${PACK}` });
+    expect(built.payload!.observacaoNF).toContain(`${LEAD}, ${OTHER}`);
+    expect(built.payload!.itens.map((i) => [i.produtoId, i.quantidade, i.valorLiquido]).sort()).toEqual([
+      [1804, 1, 16.09],
+      [1805, 2, 30],
+    ]);
+
+    // Mesmo payload visto de qualquer pedido do pack.
+    const fromLead = await buildAdsOrder(t.sql(), first.group.leadId);
+    expect(fromLead.payloadHash).toBe(built.payloadHash);
+
+    const s = await sendOrderToAds(t.sql(), idOther, { payloadHash: built.payloadHash!, requestedBy: "admin:test" });
+    expect(s).toMatchObject({ status: "SENT", externalId: `P${PACK}`, orderId: first.group.leadId });
+    const again = await sendOrderToAds(t.sql(), first.group.leadId, { payloadHash: built.payloadHash!, requestedBy: "admin:test" });
+    expect(again.id).toBe(s.id);
+    expect(w.adsPosts.filter((p) => p.path === "pedidos")).toHaveLength(1);
+    expect((await refreshAdsStatus(t.sql(), idOther)).adsStatus).toBe("Em analise");
+
+    // A tela de qualquer pedido do pack mostra o envio do pack.
+    const res = await adsStateRoute(makeRequest(`/api/orders/${idOther}/ads`, { cookies: adminCookies() }), ctx({ id: idOther }));
+    const state = await res.json();
+    expect(state.group).toMatchObject({ isPack: true, leadOrderId: LEAD });
+    expect(state.submissions.map((x: { id: string }) => x.id)).toEqual([s.id]);
+    expect(w.mlCalls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("pedido do pack já enviado sozinho: o pack não é enviado de novo", async () => {
+    const w = mockWorld();
+    useHomologation();
+    await seedPublishedListing("MLB2000", 1805);
+    const idOther = await readyOrder(w, OTHER, other);
+    const single = await buildAdsOrder(t.sql(), idOther); // o ML ainda só mostra este pedido no pack
+    expect(single.group.isPack).toBe(false);
+    await sendOrderToAds(t.sql(), idOther, { payloadHash: single.payloadHash!, requestedBy: "admin:test" });
+
+    w.orders.set(LEAD, lead());
+    const built = await buildAdsOrder(t.sql(), idOther);
+    expect(built.group.isPack).toBe(true);
+    expect(built.issues.find((i) => i.code === "pack_member_sent")).toMatchObject({ blocking: true });
+    await expect(sendOrderToAds(t.sql(), built.group.leadId, { payloadHash: "x".repeat(64), requestedBy: "admin:test" })).rejects.toMatchObject({ code: "member_already_sent" });
+    expect(w.adsPosts.filter((p) => p.path === "pedidos")).toHaveLength(1);
+  });
+
+  it("sem confirmar os pedidos do pack no ML, o envio fica bloqueado", async () => {
+    const w = mockWorld({ packDown: true });
+    const id = await readyOrder(w);
+    const built = await buildAdsOrder(t.sql(), id);
+    expect(built.ok).toBe(false);
+    expect(built.issues.find((i) => i.code === "pack_unverified")).toMatchObject({ blocking: true });
   });
 });

@@ -2,14 +2,16 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { getOrderBilling, maskDocument, validDocument, type StoredBilling } from "../marketplace/billing";
 import type { Sql } from "../sql";
-import { adsCall, adsProblem } from "./client";
+import { adsCall, adsEnvironment, adsProblem } from "./client";
 import { getAdsOrderSettings, prazoDays, type AdsOrderSettings } from "./commercial";
 import { getAdsCustomer, type AdsCustomer } from "./customers";
+import { externalIdForGroup, resolveOrderGroup, type OrderGroup } from "./order-group";
 
 /**
  * Converte um pedido do Mercado Livre no corpo de POST /api/v1/{cnpjDistribuidora}/pedidos.
- * Um pedido ADS por pedido ML (order_id); o pack_id só aparece na observação — pack e pedido não
- * são tratados como equivalentes. Qualquer inconsistência gera um problema "bloqueante".
+ * Pedido avulso (ou pack de um pedido só): um pedido ADS por order_id ("M" + order_id).
+ * Pack com vários pedidos (compra no carrinho): UM pedido ADS com os itens de todos ("P" + pack_id),
+ * frete contado uma vez por envio — ver order-group.ts. Qualquer inconsistência gera um problema "bloqueante".
  */
 export interface Issue {
   code: string;
@@ -64,17 +66,15 @@ export interface BuildResult {
   ok: boolean;
   billing: StoredBilling | null;
   customer: AdsCustomer | null;
+  /** Pedidos ML incluídos neste pedido ADS (mais de um quando é um pack). */
+  group: OrderGroup;
   totals: { itemsAds: number; itemsMl: number; mlTotal: number | null; mlPaid: number | null; adsTotal: number | null };
 }
 
 const cents = (n: number) => Math.round(n * 100);
 const round2 = (n: number) => cents(n) / 100;
 
-/** Identificador externo estável (máx. 17): "M" + order_id do ML; hash curto se o id for longo demais. */
-export function externalIdFor(orderId: string): string {
-  const id = `M${orderId}`;
-  return id.length <= 17 ? id : `M${createHash("sha256").update(orderId).digest("hex").slice(0, 16).toUpperCase()}`;
-}
+export { externalIdFor, externalIdForPack } from "./order-group";
 
 /** Serialização canônica (chaves ordenadas) para o hash do payload que o operador aprovou. */
 export function canonicalHash(v: unknown): string {
@@ -101,41 +101,98 @@ export function buildInstallments(total: number, days: number[], base: Date): { 
   return list.map((d, i) => ({ parcela: i + 1, vencimento: addDays(base, d), valor: (i === list.length - 1 ? totalC - each * (list.length - 1) : each) / 100 }));
 }
 
-export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { settings?: AdsOrderSettings | null } = {}): Promise<BuildResult> {
+type MemberRow = {
+  id: string;
+  orderId: string;
+  packId: string | null;
+  buyerId: string | null;
+  orderStatus: string | null;
+  paymentStatus: string | null;
+  discountAmount: string | null;
+  shippingAmount: string | null;
+  totalAmount: string | null;
+  paidAmount: string | null;
+  shipmentId: string | null;
+  dateCreated: Date | null;
+};
+
+const sumOrNull = (values: (string | null)[]) => (values.some((v) => v === null) ? null : round2(values.reduce((a, v) => a + Number(v), 0)));
+
+/**
+ * Frete do pack: o pagamento de cada pedido informa o frete pago (sem repetir o mesmo pagamento);
+ * sem frete nos pagamentos, o valor vem do envio — que é COMPARTILHADO pelos pedidos do pack e
+ * por isso entra uma vez por envio, não uma vez por pedido.
+ */
+function packFreight(members: MemberRow[], payments: { paymentId: string; shippingCost: string | null }[]): number {
+  const seen = new Map<string, number>();
+  for (const p of payments) seen.set(p.paymentId, Number(p.shippingCost ?? 0));
+  const fromPayments = [...seen.values()].reduce((a, v) => a + v, 0);
+  if (fromPayments > 0) return round2(fromPayments);
+  const byShipment = new Map<string, number>();
+  for (const m of members) {
+    const key = m.shipmentId ? `s:${m.shipmentId}` : `o:${m.id}`;
+    byShipment.set(key, Math.max(byShipment.get(key) ?? 0, Number(m.shippingAmount ?? 0)));
+  }
+  return round2([...byShipment.values()].reduce((a, v) => a + v, 0));
+}
+
+export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { settings?: AdsOrderSettings | null; group?: OrderGroup } = {}): Promise<BuildResult> {
   const issues: Issue[] = [];
   const block = (code: string, message: string) => issues.push({ code, message, blocking: true });
   const warn = (code: string, message: string) => issues.push({ code, message, blocking: false });
 
-  const [o] = await sql.query<{
-    orderId: string;
-    packId: string | null;
-    orderStatus: string | null;
-    paymentStatus: string | null;
-    mapping: string;
-    productsAmount: string | null;
-    discountAmount: string | null;
-    shippingAmount: string | null;
-    totalAmount: string | null;
-    paidAmount: string | null;
-    dateCreated: Date | null;
-  }>(
-    `SELECT marketplace_order_id AS "orderId", pack_id AS "packId", order_status AS "orderStatus", payment_status AS "paymentStatus",
-            mapping_status AS mapping, products_amount::text AS "productsAmount", discount_amount::text AS "discountAmount",
-            shipping_amount::text AS "shippingAmount", total_amount::text AS "totalAmount", paid_amount::text AS "paidAmount",
-            date_created AS "dateCreated"
-     FROM marketplace_order_inbox WHERE id = $1::bigint`,
-    [orderInboxId],
+  const group = opts.group ?? (await resolveOrderGroup(sql, orderInboxId));
+  for (const i of group.issues) block(i.code, i.message);
+  const members = await sql.query<MemberRow>(
+    `SELECT id::text AS id, marketplace_order_id AS "orderId", pack_id AS "packId", buyer_id AS "buyerId", order_status AS "orderStatus",
+            payment_status AS "paymentStatus", discount_amount::text AS "discountAmount", shipping_amount::text AS "shippingAmount",
+            total_amount::text AS "totalAmount", paid_amount::text AS "paidAmount", shipment_id AS "shipmentId", date_created AS "dateCreated"
+     FROM marketplace_order_inbox WHERE id = ANY($1::bigint[])`,
+    [group.memberIds],
   );
+  members.sort((a, b) => group.memberIds.indexOf(a.id) - group.memberIds.indexOf(b.id));
+  const o = members.find((m) => m.id === group.leadId);
   if (!o) throw new Error("Pedido não encontrado");
-  const externalId = externalIdFor(o.orderId);
+  const externalId = externalIdForGroup(group);
   const settings = opts.settings === undefined ? await getAdsOrderSettings(sql) : opts.settings;
-  const billing = await getOrderBilling(sql, orderInboxId);
+  // Dados fiscais do comprador: no pedido principal do pack.
+  const billing = await getOrderBilling(sql, group.leadId);
   const customer = billing?.docNumber ? await getAdsCustomer(sql, billing.docNumber) : null;
-  const totals: BuildResult["totals"] = { itemsAds: 0, itemsMl: 0, mlTotal: o.totalAmount === null ? null : Number(o.totalAmount), mlPaid: o.paidAmount === null ? null : Number(o.paidAmount), adsTotal: null };
+  const totals: BuildResult["totals"] = {
+    itemsAds: 0,
+    itemsMl: 0,
+    mlTotal: sumOrNull(members.map((m) => m.totalAmount)),
+    mlPaid: sumOrNull(members.map((m) => m.paidAmount)),
+    adsTotal: null,
+  };
 
-  // Situação do pedido e pagamento.
-  if (o.orderStatus === "cancelled" || o.orderStatus === "invalid") block("order_cancelled", `Pedido ${o.orderStatus === "cancelled" ? "cancelado" : "inválido"} no Mercado Livre`);
-  if (o.paymentStatus !== "approved") block("payment_not_approved", `Pagamento não aprovado (situação: ${o.paymentStatus ?? "desconhecida"})`);
+  // Situação de cada pedido e pagamento.
+  for (const m of members) {
+    const label = group.isPack ? `Pedido ${m.orderId} do pack` : "Pedido";
+    if (m.orderStatus === "cancelled" || m.orderStatus === "invalid") block("order_cancelled", `${label} ${m.orderStatus === "cancelled" ? "cancelado" : "inválido"} no Mercado Livre`);
+    const payment = `agamento não aprovado (situação: ${m.paymentStatus ?? "desconhecida"})`;
+    if (m.paymentStatus !== "approved") block("payment_not_approved", group.isPack ? `${label}: p${payment}` : `P${payment}`);
+  }
+
+  if (group.isPack) {
+    if (new Set(members.map((m) => m.buyerId)).size > 1) block("pack_buyer_mismatch", "Pedidos do pack com compradores diferentes");
+    const docs = await sql.query<{ doc: string }>(
+      `SELECT DISTINCT doc_number AS doc FROM marketplace_order_billing WHERE order_id = ANY($1::bigint[]) AND doc_number IS NOT NULL`,
+      [group.memberIds],
+    );
+    if (docs.length > 1) block("pack_buyer_mismatch", "Pedidos do pack com CPF/CNPJ diferentes nos dados fiscais");
+    const shipments = new Set(members.map((m) => m.shipmentId).filter(Boolean));
+    if (shipments.size > 1) warn("pack_multiple_shipments", `O Mercado Livre dividiu o pack em ${shipments.size} envios; a ADS recebe um pedido só`);
+    // Pedido do pack que já foi enviado sozinho (antes do envio por pack): não envia de novo.
+    const sent = await sql.query<{ orderId: string; externalId: string; adsPedidoId: number | null }>(
+      `SELECT marketplace_order_id AS "orderId", external_id AS "externalId", ads_pedido_id AS "adsPedidoId" FROM ads_order_submissions
+       WHERE order_id = ANY($1::bigint[]) AND environment = $2::text AND status IN ('SENDING', 'SENT', 'UNKNOWN') AND external_id <> $3::text`,
+      [group.memberIds, adsEnvironment().environment, externalId],
+    );
+    for (const s of sent) {
+      block("pack_member_sent", `Pedido ${s.orderId} já foi enviado sozinho à ADS (idExterno ${s.externalId}${s.adsPedidoId ? `, pedido ADS ${s.adsPedidoId}` : ""}); o restante do pack precisa ser lançado direto no ADSNET`);
+    }
+  }
 
   // Configuração comercial.
   if (!settings) block("settings_missing", "Configuração comercial da ADS não definida (Configurações › Pedidos ADS)");
@@ -159,8 +216,8 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
   const lines = await sql.query<{ lineKey: string; itemId: string; title: string | null; quantity: string; unitPrice: string | null; mapping: string; productId: number | null; adsProductId: number | null }>(
     `SELECT line_key AS "lineKey", marketplace_item_id AS "itemId", title, quantity::text AS quantity, unit_price::text AS "unitPrice",
             mapping_status AS mapping, product_id AS "productId", ads_product_id AS "adsProductId"
-     FROM marketplace_order_items WHERE order_id = $1::bigint ORDER BY id`,
-    [orderInboxId],
+     FROM marketplace_order_items WHERE order_id = ANY($1::bigint[]) ORDER BY id`,
+    [group.memberIds],
   );
   if (!lines.length) block("no_items", "Pedido sem itens");
   const unmapped = lines.filter((l) => l.mapping !== "MAPPED" || !l.adsProductId);
@@ -175,7 +232,7 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
     if (!(p > 0)) block("invalid_price", `Preço unitário inválido no item ${l.itemId}`);
     if (!l.adsProductId) continue;
     const cur = byProduct.get(l.adsProductId);
-    if (cur && cents(cur.unitPrice) !== cents(p)) block("conflicting_prices", `Produto ADS ${l.adsProductId} vendido com preços diferentes no mesmo pedido`);
+    if (cur && cents(cur.unitPrice) !== cents(p)) block("conflicting_prices", `Produto ADS ${l.adsProductId} vendido com preços diferentes no mesmo ${group.isPack ? "pack" : "pedido"}`);
     else if (cur) {
       cur.quantity += q;
       cur.lines.push(l.lineKey);
@@ -226,8 +283,13 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
   if (!unmapped.length && cents(totals.itemsAds) !== cents(totals.itemsMl)) block("items_total_mismatch", `Soma dos itens (${totals.itemsAds}) difere do vendido no ML (${totals.itemsMl})`);
   if (totals.mlTotal !== null && cents(totals.itemsMl) !== cents(totals.mlTotal)) block("ml_total_mismatch", `Itens (${totals.itemsMl}) diferem do total do pedido no ML (${totals.mlTotal})`);
 
-  const desconto = settings?.discountMode === "coupon" ? round2(Number(o.discountAmount ?? 0)) : 0;
-  const frete = settings?.freightMode === "buyer_paid" ? round2(Number(o.shippingAmount ?? 0)) : 0;
+  const payments = await sql.query<{ paymentId: string; shippingCost: string | null }>(
+    `SELECT payment_id AS "paymentId", shipping_cost::text AS "shippingCost" FROM marketplace_order_payments WHERE order_id = ANY($1::bigint[])`,
+    [group.memberIds],
+  );
+  const shipping = group.isPack ? packFreight(members, payments) : round2(Number(o.shippingAmount ?? 0));
+  const desconto = settings?.discountMode === "coupon" ? round2(members.reduce((a, m) => a + Number(m.discountAmount ?? 0), 0)) : 0;
+  const frete = settings?.freightMode === "buyer_paid" ? shipping : 0;
   const despesas = 0;
   const total = round2(totals.itemsAds - desconto + frete + despesas);
   totals.adsTotal = total;
@@ -250,8 +312,8 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
       let base = o.dateCreated ? new Date(o.dateCreated) : new Date();
       if (settings.dueDateBase === "payment_approved") {
         const [p] = await sql.query<{ approved: Date | null }>(
-          `SELECT max(date_approved) AS approved FROM marketplace_order_payments WHERE order_id = $1::bigint AND status = 'approved'`,
-          [orderInboxId],
+          `SELECT max(date_approved) AS approved FROM marketplace_order_payments WHERE order_id = ANY($1::bigint[]) AND status = 'approved'`,
+          [group.memberIds],
         );
         if (p?.approved) base = new Date(p.approved);
         else warn("no_approval_date", "Sem data de aprovação do pagamento; vencimentos calculados a partir da data da venda");
@@ -261,10 +323,14 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
   }
   if (parcelas.length && cents(parcelas.reduce((a, p) => a + p.valor, 0)) !== cents(total)) block("installments_mismatch", "Soma das parcelas difere do total");
 
-  const observacao = `ML ${o.orderId}${o.packId ? ` pack ${o.packId}` : ""}`.slice(0, 50);
-  const observacaoNF = `Pedido Mercado Livre ${o.orderId}${o.packId ? ` (pack ${o.packId})` : ""}`.slice(0, 250);
-  const pedidoCliente = o.orderId.slice(0, 20);
-  if (o.orderId.length > 20) warn("order_id_truncated", "Número do pedido ML truncado em pedidoCliente (20)");
+  const orderIds = members.map((m) => m.orderId);
+  const observacao = (group.isPack ? `ML pack ${group.packId}` : `ML ${o.orderId}${o.packId ? ` pack ${o.packId}` : ""}`).slice(0, 50);
+  const observacaoNF = (
+    group.isPack ? `Pedido Mercado Livre pack ${group.packId} (pedidos ${orderIds.join(", ")})` : `Pedido Mercado Livre ${o.orderId}${o.packId ? ` (pack ${o.packId})` : ""}`
+  ).slice(0, 250);
+  const reference = group.isPack ? group.packId! : o.orderId;
+  const pedidoCliente = reference.slice(0, 20);
+  if (reference.length > 20) warn("order_id_truncated", "Número do pedido ML truncado em pedidoCliente (20)");
 
   const ready = settings && billing?.docNumber && itens.length;
   const payload: AdsOrderPayload | null = ready
@@ -303,6 +369,7 @@ export async function buildAdsOrder(sql: Sql, orderInboxId: string, opts: { sett
     ok: !!payload && !issues.some((i) => i.blocking),
     billing,
     customer,
+    group,
     totals,
   };
 }

@@ -14,6 +14,7 @@ interface Issue {
 interface State {
   environment: { host: string; environment: string; writeAllowed: boolean };
   externalId: string;
+  group: { packId: string | null; isPack: boolean; leadId: string; leadOrderId: string; orders: { id: string; orderId: string }[] };
   validation: { ok: boolean; issues: Issue[]; totals: { itemsAds: number; itemsMl: number; mlTotal: number | null; mlPaid: number | null; adsTotal: number | null } };
   payload: unknown;
   payloadHash: string | null;
@@ -150,6 +151,19 @@ export function AdsPanel({ id }: { id: string }) {
             : "Envio manual para testes."}{" "}
         Nada é enviado automaticamente.
       </div>
+      {s.group.isPack && (
+        <div className="alert warn">
+          Compra no carrinho: o pack <strong>{s.group.packId}</strong> tem {s.group.orders.length} pedidos no Mercado Livre (
+          {s.group.orders.map((o, i) => (
+            <span key={o.id}>
+              {i > 0 && ", "}
+              {o.id === id ? <strong>{o.orderId}</strong> : <a href={`/pedidos/${o.id}`}>{o.orderId}</a>}
+            </span>
+          ))}
+          ) e vai para a ADS como <strong>UM pedido só</strong>, com os itens de todos e o frete contado uma vez (idExterno <code>{s.externalId}</code>). Os
+          dados do comprador ficam no pedido {s.group.leadOrderId}; enviar por qualquer um dos pedidos envia o pack inteiro.
+        </div>
+      )}
       {msg && (
         <div className={`alert ${msg.kind}`} role="status">
           {msg.text}

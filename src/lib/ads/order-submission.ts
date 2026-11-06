@@ -2,11 +2,13 @@ import "server-only";
 import { logger, redactString } from "../logger";
 import type { Sql } from "../sql";
 import { adsCall, AdsApiError, adsEnvironment, assertAdsWriteAllowed } from "./client";
+import { externalIdForGroup, resolveOrderGroup } from "./order-group";
 import { buildAdsOrder, sanitizePayload } from "./order-payload";
 
 /**
  * Envio MANUAL de um pedido para a ADS (ambiente configurado), com idempotência local e remota:
  * - um envio vigente por pedido em cada ambiente (índice único parcial: SENDING/SENT/UNKNOWN);
+ *   pack com vários pedidos = um envio só, gravado no pedido principal do pack (ver order-group.ts);
  * - produção só com ADS_PRODUCTION_WRITE_ENABLED=true (ver assertAdsWriteAllowed);
  * - antes do POST consulta GET /pedidos/{idExterno}: se já existe, só registra (não duplica);
  * - write-ahead (SENDING) antes do POST; 201 com pedidoId → SENT (só aí é considerado enviado);
@@ -64,23 +66,27 @@ async function logAttempt(sql: Sql, submissionId: string | null, orderInboxId: s
   );
 }
 
-export async function listSubmissions(sql: Sql, orderInboxId: string): Promise<Submission[]> {
-  return sql.query<Submission>(`SELECT ${COLS} FROM ads_order_submissions WHERE order_id = $1::bigint ORDER BY created_at DESC`, [orderInboxId]);
+const ids = (v: string | string[]) => (Array.isArray(v) ? v : [v]);
+
+/** Envios do pedido — ou de todos os pedidos do pack (o envio do pack fica no pedido principal). */
+export async function listSubmissions(sql: Sql, orderInboxIds: string | string[]): Promise<Submission[]> {
+  return sql.query<Submission>(`SELECT ${COLS} FROM ads_order_submissions WHERE order_id = ANY($1::bigint[]) ORDER BY created_at DESC`, [ids(orderInboxIds)]);
 }
 
-export async function listAttempts(sql: Sql, orderInboxId: string) {
+export async function listAttempts(sql: Sql, orderInboxIds: string | string[]) {
   return sql.query(
     `SELECT id::text AS id, submission_id::text AS "submissionId", operation, http_status AS "httpStatus", request, response, error,
             duration_ms AS "durationMs", created_at AS "createdAt"
-     FROM ads_order_attempts WHERE order_id = $1::bigint ORDER BY id DESC LIMIT 100`,
-    [orderInboxId],
+     FROM ads_order_attempts WHERE order_id = ANY($1::bigint[]) ORDER BY id DESC LIMIT 100`,
+    [ids(orderInboxIds)],
   );
 }
 
-async function activeSubmission(sql: Sql, orderInboxId: string): Promise<Submission | null> {
+async function activeSubmission(sql: Sql, orderInboxIds: string[]): Promise<Submission | null> {
   const [s] = await sql.query<Submission>(
-    `SELECT ${COLS} FROM ads_order_submissions WHERE order_id = $1::bigint AND environment = $2::text AND status IN ('SENDING', 'SENT', 'UNKNOWN')`,
-    [orderInboxId, adsEnvironment().environment],
+    `SELECT ${COLS} FROM ads_order_submissions WHERE order_id = ANY($1::bigint[]) AND environment = $2::text AND status IN ('SENDING', 'SENT', 'UNKNOWN')
+     ORDER BY created_at LIMIT 1`,
+    [orderInboxIds, adsEnvironment().environment],
   );
   return s ?? null;
 }
@@ -106,15 +112,21 @@ export async function lookupByExternalId(externalId: string): Promise<{ result: 
 export async function sendOrderToAds(sql: Sql, orderInboxId: string, opts: { payloadHash: string; requestedBy: string }): Promise<Submission> {
   assertAdsWriteAllowed();
   const env = adsEnvironment();
-  const active = await activeSubmission(sql, orderInboxId);
+  // Pack com vários pedidos: um envio só, registrado no pedido principal, qualquer que seja a tela de origem.
+  const group = await resolveOrderGroup(sql, orderInboxId);
+  const active = await activeSubmission(sql, group.memberIds);
+  if (active && active.externalId !== externalIdForGroup(group)) {
+    throw new SubmissionError("member_already_sent", `Um pedido deste pack já foi enviado sozinho à ADS (idExterno ${active.externalId}); o restante precisa ser lançado direto no ADSNET`);
+  }
   if (active?.status === "SENT") return active; // idempotente: já enviado
   if (active?.status === "UNKNOWN") throw new SubmissionError("needs_reconcile", "Envio anterior com resultado incerto: consulte o resultado na ADS antes de qualquer reenvio");
   if (active?.status === "SENDING") throw new SubmissionError("in_progress", "Envio em andamento");
 
-  const built = await buildAdsOrder(sql, orderInboxId);
+  const built = await buildAdsOrder(sql, orderInboxId, { group });
   if (!built.ok || !built.payload) throw new SubmissionError("not_valid", "Pedido não passou na validação", built.issues.filter((i) => i.blocking));
   if (built.payloadHash !== opts.payloadHash) throw new SubmissionError("payload_changed", "Os dados do pedido mudaram desde a visualização: valide e confira de novo antes de enviar");
   const sanitized = sanitizePayload(built.payload);
+  orderInboxId = group.leadId;
 
   // Idempotência remota: o idExterno já existe na ADS?
   const pre = await lookupByExternalId(built.externalId);
@@ -165,10 +177,10 @@ export async function sendOrderToAds(sql: Sql, orderInboxId: string, opts: { pay
 
 /** Concilia um envio incerto consultando o idExterno na ADS (nunca reenvia o POST). */
 export async function reconcileSubmission(sql: Sql, orderInboxId: string): Promise<Submission> {
-  const active = await activeSubmission(sql, orderInboxId);
+  const active = await activeSubmission(sql, (await resolveOrderGroup(sql, orderInboxId, { verify: false })).memberIds);
   if (!active) throw new SubmissionError("nothing_to_reconcile", "Nenhum envio vigente para conciliar");
   const r = await lookupByExternalId(active.externalId);
-  await logAttempt(sql, active.id, orderInboxId, { operation: "RECONCILE", status: r.status, request: { idExterno: active.externalId }, response: r.data, durationMs: r.durationMs });
+  await logAttempt(sql, active.id, active.orderId, { operation: "RECONCILE", status: r.status, request: { idExterno: active.externalId }, response: r.data, durationMs: r.durationMs });
   if (r.result === "found") {
     await sql.execute(
       `UPDATE ads_order_submissions SET status = 'SENT', ads_pedido_id = $2::int, last_error = NULL, completed_at = COALESCE(completed_at, now()), updated_at = now() WHERE id = $1::uuid`,
@@ -186,10 +198,10 @@ export async function reconcileSubmission(sql: Sql, orderInboxId: string): Promi
 
 /** Situação do pedido na ADS (Em análise, Faturado, Nota Emitida...). Somente leitura. */
 export async function refreshAdsStatus(sql: Sql, orderInboxId: string): Promise<Submission> {
-  const active = await activeSubmission(sql, orderInboxId);
+  const active = await activeSubmission(sql, (await resolveOrderGroup(sql, orderInboxId, { verify: false })).memberIds);
   if (!active || active.status !== "SENT" || !active.adsPedidoId) throw new SubmissionError("not_sent", "Pedido ainda não confirmado na ADS");
   const r = await adsCall<{ pedidoId?: number; status?: string; nf?: number }[]>("GET", "pedidos/status", { query: { pedidoIds: [active.adsPedidoId] } });
-  await logAttempt(sql, active.id, orderInboxId, { operation: "STATUS", status: r.status, request: { pedidoIds: [active.adsPedidoId] }, response: r.data, durationMs: r.durationMs });
+  await logAttempt(sql, active.id, active.orderId, { operation: "STATUS", status: r.status, request: { pedidoIds: [active.adsPedidoId] }, response: r.data, durationMs: r.durationMs });
   const row = Array.isArray(r.data) ? r.data.find((x) => x.pedidoId === active.adsPedidoId) : undefined;
   if (row?.status) await sql.execute(`UPDATE ads_order_submissions SET ads_status = $2::text, updated_at = now() WHERE id = $1::uuid`, [active.id, String(row.status).slice(0, 60)]);
   return (await sql.query<Submission>(`SELECT ${COLS} FROM ads_order_submissions WHERE id = $1::uuid`, [active.id]))[0];

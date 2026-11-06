@@ -4,6 +4,7 @@ import { adsEnvironment, assertAdsWriteAllowed } from "@/lib/ads/client";
 import { getAdsOrderSettings } from "@/lib/ads/commercial";
 import { buildCustomerDraft, createAdsCustomer, lookupAdsCustomer, setCustomerCity } from "@/lib/ads/customers";
 import { municipiosByUf } from "@/lib/ads/ibge";
+import { resolveOrderGroup } from "@/lib/ads/order-group";
 import { buildAdsOrder, sanitizePayload } from "@/lib/ads/order-payload";
 import { listAttempts, listSubmissions, reconcileSubmission, refreshAdsStatus, sendOrderToAds } from "@/lib/ads/order-submission";
 import { getAdminSession } from "@/lib/auth/admin";
@@ -38,21 +39,25 @@ export const GET = adminHandler(
     if (reveal) logger.info("Visualização do documento do comprador", { orderInboxId: id });
     const settings = await getAdsOrderSettings(sql);
     const built = await buildAdsOrder(sql, id, { settings });
+    const group = built.group;
     const billing = built.billing;
-    const draft = billing && built.customer && built.customer.status !== "FOUND" && built.customer.status !== "CREATED" ? await buildCustomerDraft(billing, settings, { sql, orderInboxId: id }).catch(() => null) : null;
+    const draft =
+      billing && built.customer && built.customer.status !== "FOUND" && built.customer.status !== "CREATED" ? await buildCustomerDraft(billing, settings, { sql, orderInboxId: group.leadId }).catch(() => null) : null;
     // Município não resolvido: lista oficial da UF para o operador escolher.
     const cityOptions = draft && !draft.city && billing?.address.state ? municipiosByUf(billing.address.state).map((m) => ({ code: m.code, name: m.name })) : null;
     return jsonNoStore({
       environment: adsEnvironment(),
       externalId: built.externalId,
+      // Pack com vários pedidos: um pedido só na ADS; dados do comprador e envio ficam no pedido principal.
+      group: { packId: group.packId, isPack: group.isPack, leadId: group.leadId, leadOrderId: group.leadOrderId, orders: group.orders },
       validation: { ok: built.ok, issues: built.issues, totals: built.totals },
       payload: sanitizePayload(built.payload),
       payloadHash: built.ok ? built.payloadHash : null,
       billing: billing ? { ...billing, docNumber: reveal ? billing.docNumber : maskDocument(billing.docNumber) } : null,
       customer: built.customer ? { ...built.customer, cnpjCpf: maskDocument(built.customer.cnpjCpf), draft: undefined } : null,
       customerDraft: draft ? { missing: draft.missing, city: draft.city, cityOptions, request: { ...draft.request, cnpjCpf: maskDocument(String(draft.request.cnpjCpf ?? "")) } } : null,
-      submissions: (await listSubmissions(sql, id)).map((s) => ({ ...s, payload: undefined })),
-      attempts: await listAttempts(sql, id),
+      submissions: (await listSubmissions(sql, group.memberIds)).map((s) => ({ ...s, payload: undefined })),
+      attempts: await listAttempts(sql, group.memberIds),
     });
   },
   { rateLimitPerMinute: 60 },
@@ -63,7 +68,7 @@ const action = z.discriminatedUnion("action", [
   z.object({ action: z.literal("customer_lookup") }),
   z.object({ action: z.literal("customer_create"), confirm: z.literal("CADASTRAR") }),
   z.object({ action: z.literal("send"), confirm: z.enum(["ENVIAR", "ENVIAR PRODUCAO"]), payloadHash: z.string().regex(/^[a-f0-9]{64}$/) }),
-  z.object({ action: z.literal("set_city"), ibge: z.string().regex(/^d{7}$/) }),
+  z.object({ action: z.literal("set_city"), ibge: z.string().regex(/^\d{7}$/) }),
   z.object({ action: z.literal("reconcile") }),
   z.object({ action: z.literal("status") }),
 ]);
@@ -77,21 +82,25 @@ export const POST = adminHandler(
     if (!b.ok) return b.response;
     const sql = getSql();
     const by = requesterFromSession(getAdminSession(req)?.sid);
+    const [exists] = await sql.query(`SELECT 1 FROM marketplace_order_inbox WHERE id = $1::bigint`, [id]);
+    if (!exists) return errorJson(404, "not_found", "Pedido não encontrado");
+    // Comprador (dados fiscais, cliente ADS, município): no pedido principal quando é um pack.
+    const buyerOrder = (await resolveOrderGroup(sql, id, { verify: false })).leadId;
     switch (b.data.action) {
       case "billing": {
-        const billing = await fetchOrderBilling(sql, id);
+        const billing = await fetchOrderBilling(sql, buyerOrder);
         // Já identifica o cliente na ADS quando há documento (somente leitura).
-        const customer = billing.docNumber && billing.docNumber.length >= 11 ? await lookupAdsCustomer(sql, billing.docNumber, id) : null;
+        const customer = billing.docNumber && billing.docNumber.length >= 11 ? await lookupAdsCustomer(sql, billing.docNumber, buyerOrder) : null;
         return jsonNoStore({ billing: { ...billing, docNumber: maskDocument(billing.docNumber) }, customerStatus: customer?.status ?? null });
       }
       case "customer_lookup": {
-        const billing = await getOrderBilling(sql, id);
+        const billing = await getOrderBilling(sql, buyerOrder);
         if (!billing?.docNumber) return errorJson(409, "no_billing", "Consulte os dados fiscais do comprador antes");
-        const c = await lookupAdsCustomer(sql, billing.docNumber, id);
+        const c = await lookupAdsCustomer(sql, billing.docNumber, buyerOrder);
         return jsonNoStore({ customer: { ...c, cnpjCpf: maskDocument(c.cnpjCpf), draft: undefined } });
       }
       case "customer_create": {
-        const c = await createAdsCustomer(sql, id, await getAdsOrderSettings(sql), by);
+        const c = await createAdsCustomer(sql, buyerOrder, await getAdsOrderSettings(sql), by);
         return jsonNoStore({ customer: { ...c, cnpjCpf: maskDocument(c.cnpjCpf), draft: undefined } });
       }
       case "send": {
@@ -104,8 +113,8 @@ export const POST = adminHandler(
       }
       case "set_city": {
         // Só grava no integrador (endereço do pedido); nada é enviado à ADS aqui.
-        const city = await setCustomerCity(sql, id, b.data.ibge);
-        logger.info("Município do endereço escolhido pelo operador", { orderInboxId: id, ibge: city.code });
+        const city = await setCustomerCity(sql, buyerOrder, b.data.ibge);
+        logger.info("Município do endereço escolhido pelo operador", { orderInboxId: buyerOrder, ibge: city.code });
         return jsonNoStore({ city });
       }
       case "reconcile": {
