@@ -6,7 +6,7 @@ export type AdsStatus = (typeof ADS_STATUSES)[number];
  * leitura do pedido) substituída pelo envio à ADS quando há um envio vigente no ambiente atual —
  * do próprio pedido ou do pack inteiro. Calculada na consulta, não gravada.
  */
-export const ADS_VIEW_STATUSES = [...ADS_STATUSES, "ADS_SENDING", "ADS_SENT"] as const;
+export const ADS_VIEW_STATUSES = [...ADS_STATUSES, "ADS_SENDING", "ADS_SENT", "ADS_SENT_CANCELLED"] as const;
 export type AdsViewStatus = (typeof ADS_VIEW_STATUSES)[number];
 
 /** Status de preparação para a ADS (não significa envio). */

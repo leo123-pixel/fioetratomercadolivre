@@ -44,7 +44,11 @@ export default async function PedidoPage({ params }: { params: Promise<{ id: str
         <h1>Pedido {str(o.marketplaceOrderId)}</h1>
         <span className={`chip ${ads.tone}`}>{ads.text}</span>
       </div>
-      {o.adsStatusReason && <div className="alert info">{str(o.adsStatusReason)}</div>}
+      {o.adsStatusReason && (
+        <div className={`alert ${o.adsImportStatus === "ADS_SENT_CANCELLED" ? "error" : "info"}`} role={o.adsImportStatus === "ADS_SENT_CANCELLED" ? "alert" : undefined}>
+          {str(o.adsStatusReason)}
+        </div>
+      )}
       {o.lastError && <div className="alert error">Último erro: {str(o.lastError)}</div>}
 
       <section className="card">

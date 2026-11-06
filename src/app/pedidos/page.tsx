@@ -44,6 +44,12 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
         escrita habilitada explicitamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados e o pedido ainda não foi enviado; depois do envio ele passa a
         &quot;Enviado à ADS&quot; (pack enviado inteiro: todos os pedidos dele).
       </div>
+      {(data.counts.ADS_SENT_CANCELLED ?? 0) > 0 && (
+        <div className="alert error" role="alert">
+          <strong>{data.counts.ADS_SENT_CANCELLED} pedido(s) cancelado(s) no Mercado Livre já estão na ADS.</strong> Cancele-os no ADSNET para não movimentar
+          estoque nem emitir NF-e. <a href="/pedidos?ads=ADS_SENT_CANCELLED">Ver pedidos</a>
+        </div>
+      )}
       <div className="toolbar" style={{ marginBottom: 12 }}>
         <a className="btn btn-secondary btn-sm" href="/pedidos/mapeamentos">
           Mapear produtos

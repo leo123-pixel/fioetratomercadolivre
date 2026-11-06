@@ -9,6 +9,7 @@ export const ADS_STATUS_LABEL: Record<string, Label> = {
   ERROR: { text: "Erro", tone: "danger" },
   ADS_SENDING: { text: "Envio à ADS a conferir", tone: "warn" },
   ADS_SENT: { text: "Enviado à ADS", tone: "info" },
+  ADS_SENT_CANCELLED: { text: "Cancelado no ML após envio à ADS", tone: "danger" },
 };
 
 export const MAPPING_LABEL: Record<string, Label> = {

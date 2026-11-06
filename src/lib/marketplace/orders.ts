@@ -425,8 +425,13 @@ const submissionJoin = (envParam: string) => `LEFT JOIN LATERAL (
       AND (s.order_id = o.id OR (o.pack_id IS NOT NULL AND s.external_id LIKE 'P%'
            AND s.order_id IN (SELECT p.id FROM marketplace_order_inbox p WHERE p.pack_id = o.pack_id)))
     ORDER BY s.created_at LIMIT 1) sub ON true`;
-const EFFECTIVE_STATUS = `CASE WHEN sub.status = 'SENT' THEN 'ADS_SENT' WHEN sub.status IS NOT NULL THEN 'ADS_SENDING' ELSE o.ads_import_status END`;
-const EFFECTIVE_REASON = `CASE WHEN sub.status = 'SENT' THEN concat('Pedido ADS ', sub.ads_pedido_id, ' · ' || sub.ads_status)
+// Cancelado no ML depois de ir para a ADS: alerta até a consulta na ADS mostrar o pedido cancelado lá.
+const CANCELLED_AFTER_SEND = `(sub.status IS NOT NULL AND o.order_status IN ('cancelled', 'invalid') AND COALESCE(sub.ads_status, '') NOT ILIKE '%cancel%')`;
+const EFFECTIVE_STATUS = `CASE WHEN ${CANCELLED_AFTER_SEND} THEN 'ADS_SENT_CANCELLED'
+  WHEN sub.status = 'SENT' THEN 'ADS_SENT' WHEN sub.status IS NOT NULL THEN 'ADS_SENDING' ELSE o.ads_import_status END`;
+const EFFECTIVE_REASON = `CASE WHEN ${CANCELLED_AFTER_SEND} THEN concat(COALESCE('Pedido ADS ' || sub.ads_pedido_id, 'Envio à ADS'),
+    ' cancelado no Mercado Livre depois do envio: cancele no ADSNET e depois clique em "Consultar resultado na ADS"')
+  WHEN sub.status = 'SENT' THEN concat('Pedido ADS ', sub.ads_pedido_id, ' · ' || sub.ads_status)
   WHEN sub.status = 'UNKNOWN' THEN 'Resultado do envio incerto: consulte o resultado na ADS'
   WHEN sub.status IS NOT NULL THEN 'Envio em andamento' ELSE o.ads_status_reason END`;
 

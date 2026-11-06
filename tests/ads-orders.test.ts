@@ -894,3 +894,31 @@ describe("pack com vários pedidos (compra no carrinho)", () => {
     expect(built.issues.find((i) => i.code === "pack_unverified")).toMatchObject({ blocking: true });
   });
 });
+
+describe("pedido cancelado no ML depois de enviado à ADS", () => {
+  it("vira alerta na lista e no pedido até a ADS mostrar o pedido cancelado", async () => {
+    const w = mockWorld();
+    useHomologation();
+    const id = await readyOrder(w);
+    const built = await buildAdsOrder(t.sql(), id);
+    await sendOrderToAds(t.sql(), id, { payloadHash: built.payloadHash!, requestedBy: "admin:test" });
+
+    // O comprador cancela; o pedido é relido do ML.
+    w.orders.set("2000019348156016", { ...w.orders.get("2000019348156016")!, status: "cancelled", date_last_updated: "2026-11-06T12:00:00.000-03:00" });
+    await processOrder(t.sql(), "2000019348156016");
+
+    const list = await listOrders(t.sql(), { adsStatus: "ADS_SENT_CANCELLED" });
+    expect(list.items.map((o) => o.id)).toEqual([id]);
+    expect(list.counts).toMatchObject({ ADS_SENT_CANCELLED: 1 });
+    expect(list.items[0].adsStatusReason).toMatch(/^Pedido ADS 9001 cancelado no Mercado Livre depois do envio: cancele no ADSNET/);
+    expect((await getOrder(t.sql(), id))!.order).toMatchObject({ adsImportStatus: "ADS_SENT_CANCELLED" });
+
+    // Cancelado no ADSNET: a consulta da situação na ADS encerra o alerta.
+    await t.sql().execute(`UPDATE ads_order_submissions SET ads_status = 'Cancelado' WHERE order_id = $1::bigint`, [id]);
+    expect((await getOrder(t.sql(), id))!.order).toMatchObject({ adsImportStatus: "ADS_SENT", adsStatusReason: "Pedido ADS 9001 · Cancelado" });
+
+    // Cancelado sem nunca ter ido à ADS continua só "Bloqueado".
+    const other = await readyOrder(w, "2000000000000104", { status: "cancelled" });
+    expect((await getOrder(t.sql(), other))!.order).toMatchObject({ adsImportStatus: "BLOCKED" });
+  });
+});
