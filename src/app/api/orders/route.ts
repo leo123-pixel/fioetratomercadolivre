@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { adminHandler } from "@/lib/api";
 import { jsonNoStore } from "@/lib/http";
-import { ADS_STATUSES, listOrders } from "@/lib/marketplace/orders";
+import { ADS_VIEW_STATUSES, listOrders } from "@/lib/marketplace/orders";
 import { getSql } from "@/lib/sql";
 import { parseQuery } from "@/lib/validation";
 
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const query = z.object({
-  adsStatus: z.enum(ADS_STATUSES).optional(),
+  adsStatus: z.enum(ADS_VIEW_STATUSES).optional(),
   mapping: z.enum(["PENDING", "MAPPED", "PARTIAL", "UNMAPPED"]).optional(),
   q: z.string().max(60).optional(),
   page: z.coerce.number().int().min(1).max(10_000).default(1),

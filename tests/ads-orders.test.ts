@@ -8,7 +8,7 @@ import { buildAdsOrder, externalIdFor } from "@/lib/ads/order-payload";
 import { reconcileSubmission, refreshAdsStatus, sendOrderToAds } from "@/lib/ads/order-submission";
 import { fetchOrderBilling, parseBillingInfo, validDocument } from "@/lib/marketplace/billing";
 import { saveMapping } from "@/lib/marketplace/mappings";
-import { processOrder } from "@/lib/marketplace/orders";
+import { getOrder, listOrders, processOrder } from "@/lib/marketplace/orders";
 import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
 import { order as mlOrder, SELLER } from "./helpers/meli-events-mock";
@@ -356,6 +356,13 @@ describe("envio manual para a ADS (homologação)", () => {
     expect(w.adsPosts.filter((p) => p.path === "pedidos")).toHaveLength(1);
     expect(JSON.stringify(s.payload)).not.toContain(CPF); // payload registrado com documento mascarado
     expect((await refreshAdsStatus(t.sql(), id)).adsStatus).toBe("Em analise");
+    // Painel: deixa de aparecer como "Pronto para ADS" — na lista, no filtro e na tela do pedido.
+    const ready = await listOrders(t.sql(), { adsStatus: "READY_FOR_ADS" });
+    expect(ready.items.map((o) => o.id)).not.toContain(id);
+    const sent = await listOrders(t.sql(), { adsStatus: "ADS_SENT" });
+    expect(sent.items.map((o) => o.id)).toEqual([id]);
+    expect(sent.counts).toMatchObject({ ADS_SENT: 1 });
+    expect((await getOrder(t.sql(), id))!.order).toMatchObject({ adsImportStatus: "ADS_SENT", adsStatusReason: "Pedido ADS 9001 · Em analise" });
     // Nada é escrito no Mercado Livre.
     expect(w.mlCalls.every((c) => c.method === "GET")).toBe(true);
   });
@@ -848,6 +855,14 @@ describe("pack com vários pedidos (compra no carrinho)", () => {
     expect(state.group).toMatchObject({ isPack: true, leadOrderId: LEAD });
     expect(state.submissions.map((x: { id: string }) => x.id)).toEqual([s.id]);
     expect(w.mlCalls.every((c) => c.method === "GET")).toBe(true);
+
+    // Lista de pedidos: os dois pedidos do pack aparecem como enviados.
+    const list = await listOrders(t.sql(), { q: PACK });
+    expect(list.items.map((o) => [o.marketplaceOrderId, o.adsImportStatus]).sort()).toEqual([
+      [LEAD, "ADS_SENT"],
+      [OTHER, "ADS_SENT"],
+    ]);
+    expect(list.items[0].adsStatusReason).toBe("Pedido ADS 9001 · Em analise");
   });
 
   it("pedido do pack já enviado sozinho: o pack não é enviado de novo", async () => {
@@ -865,6 +880,10 @@ describe("pack com vários pedidos (compra no carrinho)", () => {
     expect(built.issues.find((i) => i.code === "pack_member_sent")).toMatchObject({ blocking: true });
     await expect(sendOrderToAds(t.sql(), built.group.leadId, { payloadHash: "x".repeat(64), requestedBy: "admin:test" })).rejects.toMatchObject({ code: "member_already_sent" });
     expect(w.adsPosts.filter((p) => p.path === "pedidos")).toHaveLength(1);
+
+    // Só o pedido enviado aparece como enviado; o outro continua pendente.
+    const list = await listOrders(t.sql(), { q: PACK });
+    expect(Object.fromEntries(list.items.map((o) => [o.marketplaceOrderId, o.adsImportStatus]))).toEqual({ [LEAD]: "READY_FOR_ADS", [OTHER]: "ADS_SENT" });
   });
 
   it("sem confirmar os pedidos do pack no ML, o envio fica bloqueado", async () => {

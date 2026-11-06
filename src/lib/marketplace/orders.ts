@@ -1,4 +1,5 @@
 import "server-only";
+import { adsEnvironment } from "../ads/client";
 import { MeliHttpError, meliRequest } from "../meli/api";
 import { getStore } from "../store";
 import type { Sql } from "../sql";
@@ -19,7 +20,7 @@ import { adsStatusOf, mappingStatusOf } from "./order-status";
  *   3. SELLER_SKU   — o SKU do vendedor é "ADS-<produtoId>" (padrão gravado na publicação) e o produto existe.
  *   Sem correspondência confiável → UNMAPPED (tratamento manual).
  */
-export { ADS_STATUSES, adsStatusOf } from "./order-status";
+export { ADS_STATUSES, ADS_VIEW_STATUSES, adsStatusOf } from "./order-status";
 
 interface MeliOrderItem {
   item?: { id?: string; title?: string; seller_sku?: string | null; variation_id?: number | string | null; category_id?: string; user_product_id?: string | null };
@@ -405,14 +406,39 @@ export interface OrderListItem {
   updatedAt: Date;
 }
 
+/** Ambiente ADS atual (homologação/produção); null quando a ADS não está configurada. */
+function currentAdsEnvironment(): string | null {
+  try {
+    return adsEnvironment().environment;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Envio vigente que cobre o pedido `o` no ambiente $envParam: o do próprio pedido ou o do pack
+ * inteiro (idExterno "P…", gravado no pedido principal). O envio avulso de OUTRO pedido do pack não conta.
+ */
+const submissionJoin = (envParam: string) => `LEFT JOIN LATERAL (
+    SELECT s.status, s.ads_pedido_id, s.ads_status FROM ads_order_submissions s
+    WHERE s.environment = ${envParam}::text AND s.status IN ('SENDING', 'SENT', 'UNKNOWN')
+      AND (s.order_id = o.id OR (o.pack_id IS NOT NULL AND s.external_id LIKE 'P%'
+           AND s.order_id IN (SELECT p.id FROM marketplace_order_inbox p WHERE p.pack_id = o.pack_id)))
+    ORDER BY s.created_at LIMIT 1) sub ON true`;
+const EFFECTIVE_STATUS = `CASE WHEN sub.status = 'SENT' THEN 'ADS_SENT' WHEN sub.status IS NOT NULL THEN 'ADS_SENDING' ELSE o.ads_import_status END`;
+const EFFECTIVE_REASON = `CASE WHEN sub.status = 'SENT' THEN concat('Pedido ADS ', sub.ads_pedido_id, ' · ' || sub.ads_status)
+  WHEN sub.status = 'UNKNOWN' THEN 'Resultado do envio incerto: consulte o resultado na ADS'
+  WHEN sub.status IS NOT NULL THEN 'Envio em andamento' ELSE o.ads_status_reason END`;
+
 export async function listOrders(sql: Sql, opts: { adsStatus?: string; mapping?: string; q?: string; page?: number; pageSize?: number } = {}) {
   const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
   const page = Math.max(opts.page ?? 1, 1);
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: unknown[] = [currentAdsEnvironment()];
+  const join = submissionJoin("$1");
   if (opts.adsStatus) {
     params.push(opts.adsStatus);
-    where.push(`o.ads_import_status = $${params.length}::text`);
+    where.push(`${EFFECTIVE_STATUS} = $${params.length}::text`);
   }
   if (opts.mapping) {
     params.push(opts.mapping);
@@ -423,7 +449,7 @@ export async function listOrders(sql: Sql, opts: { adsStatus?: string; mapping?:
     where.push(`(o.marketplace_order_id = $${params.length}::text OR o.pack_id = $${params.length}::text OR o.buyer_nickname ILIKE '%' || $${params.length}::text || '%')`);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const [{ total }] = await sql.query<{ total: number }>(`SELECT count(*)::int AS total FROM marketplace_order_inbox o ${clause}`, params);
+  const [{ total }] = await sql.query<{ total: number }>(`SELECT count(*)::int AS total FROM marketplace_order_inbox o ${join} ${clause}`, params);
   params.push(pageSize, (page - 1) * pageSize);
   const items = await sql.query<OrderListItem>(
     `SELECT o.id::text AS id, o.marketplace_order_id AS "marketplaceOrderId", o.pack_id AS "packId", o.date_created AS "dateCreated",
@@ -431,12 +457,15 @@ export async function listOrders(sql: Sql, opts: { adsStatus?: string; mapping?:
             (SELECT count(*)::int FROM marketplace_order_items i WHERE i.order_id = o.id) AS "itemCount",
             (SELECT COALESCE(sum(quantity), 0)::text FROM marketplace_order_items i WHERE i.order_id = o.id) AS "unitCount",
             o.total_amount::text AS "totalAmount", o.currency_id AS "currencyId", o.payment_status AS "paymentStatus", o.order_status AS "orderStatus",
-            o.mapping_status AS "mappingStatus", o.ads_import_status AS "adsImportStatus", o.ads_status_reason AS "adsStatusReason", o.updated_at AS "updatedAt"
-     FROM marketplace_order_inbox o ${clause}
+            o.mapping_status AS "mappingStatus", ${EFFECTIVE_STATUS} AS "adsImportStatus", ${EFFECTIVE_REASON} AS "adsStatusReason", o.updated_at AS "updatedAt"
+     FROM marketplace_order_inbox o ${join} ${clause}
      ORDER BY o.date_created DESC NULLS LAST, o.id DESC LIMIT $${params.length - 1}::int OFFSET $${params.length}::int`,
     params,
   );
-  const counts = await sql.query<{ status: string; n: number }>(`SELECT ads_import_status AS status, count(*)::int AS n FROM marketplace_order_inbox GROUP BY 1`);
+  const counts = await sql.query<{ status: string; n: number }>(
+    `SELECT ${EFFECTIVE_STATUS} AS status, count(*)::int AS n FROM marketplace_order_inbox o ${join} GROUP BY 1`,
+    [params[0]],
+  );
   return { items, total, page, pageSize, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
 }
 
@@ -449,11 +478,11 @@ export async function getOrder(sql: Sql, id: string) {
             o.products_amount::text AS "productsAmount", o.discount_amount::text AS "discountAmount", o.shipping_amount::text AS "shippingAmount",
             o.total_amount::text AS "totalAmount", o.paid_amount::text AS "paidAmount", o.shipment_id AS "shipmentId", o.tags,
             o.date_created AS "dateCreated", o.date_closed AS "dateClosed", o.ml_last_updated AS "mlLastUpdated", o.mapping_status AS "mappingStatus",
-            o.ads_import_status AS "adsImportStatus", o.ads_status_reason AS "adsStatusReason", o.last_error AS "lastError",
+            ${EFFECTIVE_STATUS} AS "adsImportStatus", ${EFFECTIVE_REASON} AS "adsStatusReason", o.last_error AS "lastError",
             o.received_at AS "receivedAt", o.last_fetched_at AS "lastFetchedAt", o.updated_at AS "updatedAt",
             EXISTS (SELECT 1 FROM marketplace_order_raw r WHERE r.order_id = o.id) AS "hasRaw"
-     FROM marketplace_order_inbox o WHERE o.id = $1::bigint`,
-    [id],
+     FROM marketplace_order_inbox o ${submissionJoin("$2")} WHERE o.id = $1::bigint`,
+    [id, currentAdsEnvironment()],
   );
   if (!order) return null;
   const [items, payments, shipments, packOrders] = await Promise.all([

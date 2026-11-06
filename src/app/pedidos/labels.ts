@@ -7,6 +7,8 @@ export const ADS_STATUS_LABEL: Record<string, Label> = {
   READY_FOR_ADS: { text: "Pronto para ADS (não enviado)", tone: "ok" },
   BLOCKED: { text: "Bloqueado", tone: "danger" },
   ERROR: { text: "Erro", tone: "danger" },
+  ADS_SENDING: { text: "Envio à ADS a conferir", tone: "warn" },
+  ADS_SENT: { text: "Enviado à ADS", tone: "info" },
 };
 
 export const MAPPING_LABEL: Record<string, Label> = {

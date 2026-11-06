@@ -1,7 +1,7 @@
 import { requireAdminPage } from "@/lib/auth/page-guard";
 import { formatDateTime, formatMoney, formatNumber } from "@/lib/format";
 import { logger } from "@/lib/logger";
-import { ADS_STATUSES, listOrders } from "@/lib/marketplace/orders";
+import { ADS_VIEW_STATUSES, listOrders } from "@/lib/marketplace/orders";
 import { kickIfStale } from "@/lib/marketplace/scheduler";
 import { getSql } from "@/lib/sql";
 import { PageProblem } from "../PageProblem";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export default async function PedidosPage({ searchParams }: { searchParams: Promise<{ ads?: string; q?: string; page?: string }> }) {
   const sp = await searchParams;
   if ((await requireAdminPage("/pedidos")) === "config") return <PageProblem kind="config" />;
-  const adsStatus = (ADS_STATUSES as readonly string[]).includes(sp.ads ?? "") ? (sp.ads as (typeof ADS_STATUSES)[number]) : undefined;
+  const adsStatus = (ADS_VIEW_STATUSES as readonly string[]).includes(sp.ads ?? "") ? (sp.ads as (typeof ADS_VIEW_STATUSES)[number]) : undefined;
   const page = Math.max(1, Number(sp.page) || 1);
   let data;
   try {
@@ -41,7 +41,8 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
       </div>
       <div className="alert warn" role="note">
         O envio para a ADS é <strong>manual</strong>, pedido a pedido, com confirmação. Nenhum pedido é enviado automaticamente. Produção só com
-        escrita habilitada explicitamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados.
+        escrita habilitada explicitamente. &quot;Pronto para ADS&quot; significa que os dados essenciais foram preparados e o pedido ainda não foi enviado; depois do envio ele passa a
+        &quot;Enviado à ADS&quot; (pack enviado inteiro: todos os pedidos dele).
       </div>
       <div className="toolbar" style={{ marginBottom: 12 }}>
         <a className="btn btn-secondary btn-sm" href="/pedidos/mapeamentos">
@@ -55,7 +56,7 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
         <a href="/pedidos" className={`btn btn-sm ${!adsStatus ? "btn-primary" : "btn-secondary"}`}>
           Todos ({total})
         </a>
-        {ADS_STATUSES.map((s) => (
+        {ADS_VIEW_STATUSES.map((s) => (
           <a key={s} href={`/pedidos?ads=${s}`} className={`btn btn-sm ${adsStatus === s ? "btn-primary" : "btn-secondary"}`}>
             {ADS_STATUS_LABEL[s].text} ({data.counts[s] ?? 0})
           </a>
