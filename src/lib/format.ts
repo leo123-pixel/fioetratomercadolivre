@@ -25,7 +25,8 @@ export function formatDateTime(value: string | Date | null | undefined): string 
   if (!value) return "—";
   const d = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: TZ }).format(d);
+  // Espaço que não quebra: data e hora ficam na mesma linha nas tabelas.
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: TZ }).format(d).replace(/\s+/g, " ");
 }
 
 export function formatDate(value: string | Date | null | undefined): string {

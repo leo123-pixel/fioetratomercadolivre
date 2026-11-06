@@ -56,7 +56,8 @@ body {
 .brand { font-weight: 700; font-size: 1.1rem; }
 .brand-sub { color: var(--muted); font-size: 0.9rem; }
 
-.container { max-width: 1240px; margin: 0 auto; padding: 24px 16px 48px; }
+/* Usa a largura da tela (até 1680px): as tabelas largas cabem sem cortar colunas. */
+.container { max-width: 1680px; margin: 0 auto; padding: 24px clamp(16px, 2.5vw, 40px) 48px; }
 .narrow { max-width: 848px; }
 
 .nav { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
@@ -186,9 +187,22 @@ textarea { min-height: 120px; resize: vertical; }
 
 .btn-sm { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; }
 
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+/* Tabela mais larga que a tela: rola na horizontal, com sombra na borda indicando que há mais colunas. */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left / 40px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right / 40px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgb(0 0 0 / 0.16), transparent) left / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgb(0 0 0 / 0.16), transparent) right / 14px 100% no-repeat scroll,
+    var(--surface);
+}
 table.data { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-table.data th, table.data td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+table.data th, table.data td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+/* Códigos e valores curtos não quebram no meio. */
+table.data td { overflow-wrap: normal; }
 table.data th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); background: var(--bg); white-space: nowrap; }
 table.data tr:last-child td { border-bottom: 0; }
 table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

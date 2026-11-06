@@ -105,7 +105,7 @@ export default async function PedidosPage({ searchParams }: { searchParams: Prom
                   <tr key={o.id}>
                     <td>
                       <a href={`/pedidos/${o.id}`}>{o.marketplaceOrderId}</a>
-                      {o.packId && <small className="muted" style={{ display: "block" }}>pack {o.packId}</small>}
+                      {o.packId && <small className="muted" style={{ display: "block", whiteSpace: "nowrap" }}>pack {o.packId}</small>}
                     </td>
                     <td>{formatDateTime(o.dateCreated)}</td>
                     <td>
