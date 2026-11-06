@@ -634,28 +634,28 @@ describe("cliente inativo na ADS", () => {
 });
 
 describe("código IBGE da cidade", () => {
-  it("quando a ADS não tem a cidade (ou outra grafia), usa a lista oficial do IBGE pela UF", async () => {
+  it("usa a lista oficial do IBGE guardada no projeto, sem depender de rede", async () => {
     mockWorld();
     useHomologation();
-    const { resolveIbge, resetIbgeCacheForTests } = await import("@/lib/ads/customers");
-    resetIbgeCacheForTests();
+    const { resolveIbge } = await import("@/lib/ads/customers");
     const original = globalThis.fetch;
-    const urls: string[] = [];
+    const hosts: string[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-        if (url.hostname === "servicodados.ibge.gov.br") {
-          urls.push(url.pathname);
-          return new Response(JSON.stringify([{ id: 3520905, nome: "Ipaussu" }, { id: 3550308, nome: "São Paulo" }]), { status: 200 });
-        }
+        hosts.push(url.hostname);
         return original(input, init);
       }),
     );
-    // A ADS simulada só conhece "SAO PAULO": Ipaussu vem do IBGE.
+    // A ADS simulada só conhece "SAO PAULO": Ipaussu vem da lista oficial, sem nenhuma chamada externa.
     expect(await resolveIbge("Ipaussu", "SP")).toBe("3520905");
+    expect(await resolveIbge("São Paulo", "SP")).toBe("3550308");
+    expect(await resolveIbge("SAO JOSE DOS CAMPOS", "SP")).toBe("3549904");
+    expect(hosts).toEqual([]);
+    // Nome inexistente: tenta a ADS e, sem correspondência exata, não inventa.
     expect(await resolveIbge("Cidade Inexistente", "SP")).toBeNull();
-    expect(urls).toEqual(["/api/v1/localidades/estados/SP/municipios"]); // cache por UF; só a UF é enviada
+    expect(hosts.every((h) => h !== "servicodados.ibge.gov.br")).toBe(true);
   });
 });
 
