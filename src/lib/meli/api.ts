@@ -58,6 +58,8 @@ export interface MeliResponse<T> {
   data: T;
   requestId: string;
   durationMs: number;
+  /** Cabeçalhos da resposta (ex.: x-version do estoque de User Products). */
+  headers: Headers;
 }
 
 let minIntervalMs = 150;
@@ -149,7 +151,7 @@ export async function meliRequest<T = unknown>(path: string, opts: MeliRequestOp
     const msg = typeof o.message === "string" ? redactString(o.message).slice(0, 500) : `HTTP ${res.status}`;
     throw new MeliHttpError(classify(res.status), res.status, `${msg} (HTTP ${res.status} em ${url.pathname})`, code, parseCauses(data), retryAfter(res), sanitize(data));
   }
-  return { status: res.status, data: data as T, requestId, durationMs };
+  return { status: res.status, data: data as T, requestId, durationMs, headers: res.headers };
 }
 
 /** Somente para testes. */

@@ -63,6 +63,11 @@ export default async function AnunciosPage({ searchParams }: { searchParams: Pro
           {caps.publicationModel === "USER_PRODUCTS" ? "User Products" : caps.publicationModel === "CLASSIC" ? "clássico" : "não detectado"}
         </span>
       </div>
+      <p style={{ margin: "0 0 12px" }}>
+        <a className="btn btn-secondary btn-sm" href="/anuncios/vinculacao">
+          Vinculação de anúncios legados e estoque
+        </a>
+      </p>
       <section className="kpis" aria-label="Indicadores de sincronização">
         <a className="kpi" href="/configuracoes/integracoes/mercadolivre/monitoramento">
           <strong>{lastSync ? formatDateTime(lastSync.finishedAt ?? lastSync.startedAt) : "nunca"}</strong>

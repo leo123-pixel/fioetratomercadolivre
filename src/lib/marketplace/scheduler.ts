@@ -7,6 +7,7 @@ import { logger } from "../logger";
 import { MeliAuthError } from "../meli/tokens";
 import { syncAllListings } from "../publish/listings";
 import { getSql, type Sql } from "../sql";
+import { runStockSyncTick } from "../stock/reconcile";
 import { getStore } from "../store";
 import { raiseAlert } from "./alerts";
 import { getMarketplaceConfig } from "./config";
@@ -170,6 +171,10 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
   for (const type of ["ORDERS_RECOVERY", "LISTINGS_RECONCILE", "MISSED_FEEDS"] as SyncJobType[]) {
     if (left() < 12_000) break;
     if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger, { deadline }));
+  }
+  // Estoque: retentativas de atualizações já autorizadas e a automação (desligada por padrão; ver src/lib/stock).
+  if (connected && left() > 15_000) {
+    await runStockSyncTick(sql, deadline).catch((err) => logger.error("Falha na sincronização de estoque", { err }));
   }
   // O tempo que sobrar vai para a fila (inclui eventos gerados pelas rotinas, como pedidos recuperados).
   if (left() > 10_000) {

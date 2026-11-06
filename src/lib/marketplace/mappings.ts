@@ -149,6 +149,12 @@ export interface MappingInput {
   replace?: boolean;
   /** false = não reaplica nos pedidos agora (usado no lote, que reaplica uma vez no fim). */
   remap?: boolean;
+  /** Critério que originou o vínculo ITEM (padrão MANUAL). */
+  source?: "MANUAL" | "SKU_MATCH" | "GTIN_MATCH" | "MANUFACTURER_MATCH";
+  /** Composição do kit/pacote (vínculo ITEM). Vazio = 1 unidade do produto por venda. */
+  components?: { productId: number; quantity: number }[];
+  /** Limite de quantidade anunciada para este anúncio (vínculo ITEM). */
+  maxQuantity?: number | null;
 }
 
 /**
@@ -185,12 +191,27 @@ export async function saveMapping(sql: Sql, m: MappingInput): Promise<{ mappingI
         [m.itemId, variation],
       );
       if (current && current.productId !== product.id && !m.replace) throw new MappingError("mapping_exists", "Este anúncio já está vinculado a outro produto ADS");
-      if (current) await tx.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now() WHERE id = $1::bigint`, [current.id]);
+      if (current) await tx.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now(), deactivated_by = $2::text WHERE id = $1::bigint`, [current.id, m.createdBy]);
       const [row] = await tx.query<{ id: string }>(
-        `INSERT INTO marketplace_product_mappings (mapping_type, marketplace_item_id, variation_id, product_id, ads_product_id, created_by, notes)
-         VALUES ('ITEM', $1::text, $2::text, $3::int, $4::int, $5::text, $6::text) RETURNING id::text AS id`,
-        [m.itemId, variation, product.id, product.adsProductId, m.createdBy, m.notes ?? null],
+        `INSERT INTO marketplace_product_mappings (mapping_type, marketplace_item_id, variation_id, product_id, ads_product_id, created_by, notes, source, max_quantity)
+         VALUES ('ITEM', $1::text, $2::text, $3::int, $4::int, $5::text, $6::text, $7::text, $8::int) RETURNING id::text AS id`,
+        [m.itemId, variation, product.id, product.adsProductId, m.createdBy, m.notes ?? null, m.source ?? "MANUAL", m.maxQuantity ?? null],
       );
+      if (m.components?.length) {
+        const comps = await tx.query<{ id: number; adsProductId: number; inactive: boolean }>(
+          `SELECT id, ads_product_id AS "adsProductId", inactive FROM products WHERE id = ANY($1::int[])`,
+          [m.components.map((c) => c.productId)],
+        );
+        for (const c of m.components) {
+          const p = comps.find((x) => x.id === c.productId);
+          if (!p) throw new MappingError("component_not_found", `Componente ${c.productId} não encontrado no catálogo`);
+          if (p.inactive) throw new MappingError("component_inactive", `Componente ADS ${p.adsProductId} está inativo`);
+          await tx.execute(
+            `INSERT INTO marketplace_mapping_components (mapping_id, product_id, ads_product_id, quantity) VALUES ($1::bigint, $2::int, $3::int, $4::int)`,
+            [row.id, p.id, p.adsProductId, c.quantity],
+          );
+        }
+      }
       return { mappingId: row.id, remapped: m.remap === false ? { lines: 0, mapped: 0, orders: 0 } : await remapOrders(tx) };
     }
     const sku = m.sellerSku?.trim();
@@ -200,7 +221,7 @@ export async function saveMapping(sql: Sql, m: MappingInput): Promise<{ mappingI
       [sku],
     );
     if (current && current.productId !== product.id && !m.replace) throw new MappingError("mapping_exists", "Este SKU já está vinculado a outro produto ADS");
-    if (current) await tx.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now() WHERE id = $1::bigint`, [current.id]);
+    if (current) await tx.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now(), deactivated_by = $2::text WHERE id = $1::bigint`, [current.id, m.createdBy]);
     const [row] = await tx.query<{ id: string }>(
       `INSERT INTO marketplace_product_mappings (mapping_type, seller_sku, product_id, ads_product_id, created_by, notes)
        VALUES ('SKU', $1::text, $2::int, $3::int, $4::text, $5::text) RETURNING id::text AS id`,
@@ -211,8 +232,8 @@ export async function saveMapping(sql: Sql, m: MappingInput): Promise<{ mappingI
 }
 
 /** Desativa um vínculo (não altera pedidos já mapeados; afeta pedidos futuros). */
-export async function deactivateMapping(sql: Sql, id: string): Promise<boolean> {
-  return (await sql.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now() WHERE id = $1::bigint AND active`, [id])) > 0;
+export async function deactivateMapping(sql: Sql, id: string, by: string | null = null): Promise<boolean> {
+  return (await sql.execute(`UPDATE marketplace_product_mappings SET active = false, deactivated_at = now(), deactivated_by = $2::text WHERE id = $1::bigint AND active`, [id, by])) > 0;
 }
 
 export async function listMappings(sql: Sql) {

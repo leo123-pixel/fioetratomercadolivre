@@ -763,6 +763,12 @@ model ProductMapping {
   active            Boolean   @default(true)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   deactivatedAt     DateTime? @map("deactivated_at") @db.Timestamptz(3)
+  /// Quem removeu o vínculo (auditoria).
+  deactivatedBy     String?   @map("deactivated_by")
+  /// Limite de quantidade anunciada para este anúncio (regra de alocação). NULL = sem limite.
+  maxQuantity       Int?      @map("max_quantity")
+
+  components MappingComponent[]
 
   @@map("marketplace_product_mappings")
 }
@@ -847,4 +853,220 @@ model AdsOrderAttempt {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("ads_order_attempts")
+}
+
+// ---------------------------------------------------------------------------
+// Anúncios legados e sincronização de estoque ADS → Mercado Livre.
+// Migration 20261110000000_legacy_listings_stock_sync (CHECKs e índices parciais na SQL).
+// ---------------------------------------------------------------------------
+
+/// Composição de um vínculo (kit/pacote). Sem linhas = 1 unidade do produto do vínculo por venda.
+model MappingComponent {
+  mappingId    BigInt @map("mapping_id")
+  productId    Int    @map("product_id")
+  adsProductId Int    @map("ads_product_id")
+  quantity     Int
+
+  mapping ProductMapping @relation(fields: [mappingId], references: [id], onDelete: Cascade)
+
+  @@id([mappingId, productId])
+  @@map("marketplace_mapping_components")
+}
+
+/// Inventário dos anúncios da conta (um por anúncio/variação), lido do ML. Nada é escrito no ML aqui.
+model LegacyListing {
+  id                   BigInt    @id @default(autoincrement())
+  marketplaceAccountId String    @map("marketplace_account_id")
+  marketplaceItemId    String    @map("marketplace_item_id")
+  variationId          String    @default("") @map("variation_id")
+  variationLabel       String?   @map("variation_label")
+  itemHasVariations    Boolean   @default(false) @map("item_has_variations")
+  userProductId        String?   @map("user_product_id")
+  familyId             String?   @map("family_id")
+  inventoryId          String?   @map("inventory_id")
+  title                String?
+  status               String?
+  subStatus            Json      @default("[]") @map("sub_status")
+  sellerSku            String?   @map("seller_sku")
+  gtins                String[]  @default([])
+  brand                String?
+  manufacturerCode     String?   @map("manufacturer_code")
+  availableQuantity    Int?      @map("available_quantity")
+  logisticType         String?   @map("logistic_type")
+  catalogListing       Boolean?  @map("catalog_listing")
+  thumbnail            String?
+  permalink            String?
+  price                Decimal?  @db.Decimal(14, 2)
+  remoteLastUpdated    DateTime? @map("remote_last_updated") @db.Timestamptz(3)
+  /// INTEGRATOR | EXTERNAL
+  origin               String
+  suggestedProductId   Int?      @map("suggested_product_id")
+  /// EXISTING_LINK | SKU_MATCH | GTIN_MATCH | MANUFACTURER_MATCH
+  suggestionSource     String?   @map("suggestion_source")
+  suggestionConfidence String?   @map("suggestion_confidence")
+  candidateCount       Int       @default(0) @map("candidate_count")
+  suggestionDetails    Json?     @map("suggestion_details")
+  suggestedAt          DateTime? @map("suggested_at") @db.Timestamptz(3)
+  discoveredAt         DateTime  @default(now()) @map("discovered_at") @db.Timestamptz(3)
+  lastSeenAt           DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  removedAt            DateTime? @map("removed_at") @db.Timestamptz(3)
+
+  @@unique([marketplaceItemId, variationId], map: "legacy_listings_key")
+  @@index([userProductId], map: "legacy_listings_user_product_idx")
+  @@index([sellerSku], map: "legacy_listings_sku_idx")
+  @@index([status], map: "legacy_listings_status_idx")
+  @@map("legacy_listings")
+}
+
+model LegacyListingRejection {
+  id                BigInt   @id @default(autoincrement())
+  marketplaceItemId String   @map("marketplace_item_id")
+  variationId       String   @default("") @map("variation_id")
+  productId         Int      @map("product_id")
+  rejectedBy        String   @map("rejected_by")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([marketplaceItemId, variationId, productId], map: "legacy_listing_rejections_key")
+  @@map("legacy_listing_rejections")
+}
+
+/// Política de estoque por produto ADS (reserva, alocação entre anúncios, aprovação para automação).
+model StockSyncGroup {
+  productId        Int       @id @map("product_id")
+  adsProductId     Int       @map("ads_product_id")
+  safetyReserve    Int?      @map("safety_reserve")
+  /// EXCLUSIVE | SPLIT_EVEN
+  allocationMode   String    @default("EXCLUSIVE") @map("allocation_mode")
+  autoSyncApproved Boolean   @default(false) @map("auto_sync_approved")
+  approvedBy       String?   @map("approved_by")
+  approvedAt       DateTime? @map("approved_at") @db.Timestamptz(3)
+  notes            String?
+  updatedBy        String?   @map("updated_by")
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("stock_sync_groups")
+}
+
+/// Execução de comparação (DRY_RUN | AUTO).
+model StockSyncRun {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  mode         String
+  requestedBy  String    @map("requested_by")
+  status       String    @default("RUNNING")
+  summary      Json?
+  errorMessage String?   @map("error_message")
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt   DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  proposals StockSyncProposal[]
+
+  @@index([startedAt(sort: Desc)], map: "stock_sync_runs_started_idx")
+  @@map("stock_sync_runs")
+}
+
+model StockSyncProposal {
+  id                  BigInt    @id @default(autoincrement())
+  runId               String    @map("run_id") @db.Uuid
+  poolKey             String    @map("pool_key")
+  marketplaceItemIds  String[]  @map("marketplace_item_ids")
+  variationId         String?   @map("variation_id")
+  userProductId       String?   @map("user_product_id")
+  productIds          Int[]     @default([]) @map("product_ids")
+  stockModel          String    @map("stock_model")
+  eligible            Boolean
+  reasonCode          String?   @map("reason_code")
+  reason              String?
+  adsQuantity         Decimal?  @map("ads_quantity") @db.Decimal(14, 3)
+  safetyReserve       Int?      @map("safety_reserve")
+  pendingOrders       Decimal?  @map("pending_orders") @db.Decimal(14, 3)
+  marketplaceQuantity Int?      @map("marketplace_quantity")
+  proposedQuantity    Int?      @map("proposed_quantity")
+  difference          Int?
+  direction           String?
+  remoteVersion       String?   @map("remote_version")
+  adsFetchedAt        DateTime? @map("ads_fetched_at") @db.Timestamptz(3)
+  calculation         Json      @default("{}")
+  /// PROPOSED | APPROVED | APPLIED | DIVERGED | FAILED | STALE | SUPERSEDED | SKIPPED
+  status              String    @default("PROPOSED")
+  approvedBy          String?   @map("approved_by")
+  approvedAt          DateTime? @map("approved_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  run StockSyncRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId], map: "stock_sync_proposals_run_idx")
+  @@index([poolKey, createdAt(sort: Desc)], map: "stock_sync_proposals_pool_idx")
+  @@map("stock_sync_proposals")
+}
+
+/// Atualização de estoque no ML (um job ativo por estoque — índice único parcial na migration).
+model StockSyncJob {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  proposalId      BigInt?   @map("proposal_id")
+  poolKey         String    @map("pool_key")
+  /// MANUAL | AUTO
+  syncMode        String    @map("sync_mode")
+  /// QUEUED | RUNNING | SUCCEEDED | DIVERGED | FAILED | STALE | SKIPPED
+  status          String    @default("QUEUED")
+  authorizedBy    String    @map("authorized_by")
+  idempotencyKey  String    @unique(map: "stock_sync_jobs_idem_key") @map("idempotency_key")
+  stockModel      String?   @map("stock_model")
+  targetQuantity  Int       @map("target_quantity")
+  beforeQuantity  Int?      @map("before_quantity")
+  appliedQuantity Int?      @map("applied_quantity")
+  statusBefore    String?   @map("status_before")
+  statusAfter     String?   @map("status_after")
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(4) @map("max_attempts")
+  nextRunAt       DateTime  @default(now()) @map("next_run_at") @db.Timestamptz(3)
+  lockedUntil     DateTime? @map("locked_until") @db.Timestamptz(3)
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  startedAt       DateTime? @map("started_at") @db.Timestamptz(3)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  calls StockSyncAttempt[]
+
+  @@index([status, nextRunAt], map: "stock_sync_jobs_queue_idx")
+  @@index([createdAt(sort: Desc)], map: "stock_sync_jobs_created_idx")
+  @@index([poolKey, createdAt(sort: Desc)], map: "stock_sync_jobs_pool_idx")
+  @@map("stock_sync_jobs")
+}
+
+model StockSyncAttempt {
+  id           BigInt   @id @default(autoincrement())
+  jobId        String   @map("job_id") @db.Uuid
+  operation    String
+  request      Json?
+  response     Json?
+  httpStatus   Int?     @map("http_status")
+  errorCode    String?  @map("error_code")
+  errorMessage String?  @map("error_message")
+  durationMs   Int?     @map("duration_ms")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  job StockSyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt], map: "stock_sync_attempts_job_idx")
+  @@map("stock_sync_attempts")
+}
+
+/// Auditoria: vínculos confirmados/removidos, sugestões recusadas, políticas e configurações alteradas.
+model StockSyncHistory {
+  id                BigInt   @id @default(autoincrement())
+  eventType         String   @map("event_type")
+  actor             String
+  marketplaceItemId String?  @map("marketplace_item_id")
+  variationId       String?  @map("variation_id")
+  productId         Int?     @map("product_id")
+  mappingId         BigInt?  @map("mapping_id")
+  jobId             String?  @map("job_id") @db.Uuid
+  details           Json?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt(sort: Desc)], map: "stock_sync_history_created_idx")
+  @@index([marketplaceItemId, createdAt(sort: Desc)], map: "stock_sync_history_item_idx")
+  @@map("stock_sync_history")
 }
