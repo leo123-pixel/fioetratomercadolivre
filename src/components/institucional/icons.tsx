@@ -150,6 +150,8 @@ const paths: Record<string, React.ReactNode> = {
   ),
   arrowRight: <path d="M5 12h14M13 6l6 6-6 6" />,
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  pause: <path d="M9 6v12M15 6v12" />,
+  play: <path d="M8 5.5v13l10-6.5z" />,
   arrowUpRight: <path d="M7 17 17 7M8 7h9v9" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   close: <path d="M6 6l12 12M18 6 6 18" />,

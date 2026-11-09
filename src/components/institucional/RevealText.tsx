@@ -4,8 +4,9 @@ import { useEffect, useRef } from "react";
 import s from "./site.module.css";
 
 /**
- * Texto cujas palavras "acendem" ao entrar na tela. Sem JS ou com prefers-reduced-motion,
- * o texto aparece normalmente (o estado apagado só é aplicado depois que o observador é armado).
+ * Texto cujas palavras "acendem" em sequência ao entrar na tela (como na referência).
+ * Sem JS o texto aparece normalmente: o estado apagado só é aplicado depois que o observador é armado.
+ * É uma animação só de opacidade, mantida mesmo com "reduzir movimento".
  */
 export function RevealText({ text, offset = 0, className }: { text: string; offset?: number; className?: string }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -13,9 +14,6 @@ export function RevealText({ text, offset = 0, className }: { text: string; offs
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const rect = el.getBoundingClientRect();
-    if (rect.top < window.innerHeight * 0.9) return; // já visível no carregamento: não anima
     el.dataset.reveal = "armed";
     const observer = new IntersectionObserver(
       (entries) => {
@@ -24,10 +22,13 @@ export function RevealText({ text, offset = 0, className }: { text: string; offs
           observer.disconnect();
         }
       },
-      { rootMargin: "0px 0px -15% 0px" },
+      { rootMargin: "0px 0px -12% 0px" },
     );
-    observer.observe(el);
-    return () => observer.disconnect();
+    const frame = requestAnimationFrame(() => observer.observe(el));
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, []);
 
   const words = text.split(" ");

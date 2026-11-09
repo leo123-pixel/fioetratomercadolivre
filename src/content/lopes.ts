@@ -40,10 +40,10 @@ export const company = {
 };
 
 export const seo = {
-  title: "Lopes Cosméticos | Distribuidora de cosméticos e perfumarias em Campo Grande, MS",
+  title: "Lopes Cosméticos | Distribuidora de cosméticos e perfumarias",
   description:
     "Desde 1983, a Lopes Cosméticos conecta marcas e pontos de venda do mercado da beleza. Distribuição B2B para salões, perfumarias, farmácias, supermercados e lojistas com CNPJ.",
-  ogImageAlt: "Lopes Cosméticos — distribuidora de cosméticos e perfumarias em Campo Grande, MS, desde 1983",
+  ogImageAlt: "Lopes Cosméticos — distribuidora de cosméticos e perfumarias desde 1983",
 };
 
 export const contact = {
@@ -158,7 +158,7 @@ export const segments = {
 export const numbers = {
   title: "Uma trajetória que se mede em relações de confiança",
   items: [
-    { value: "1983", label: "ano de fundação", text: "Uma história construída em Campo Grande, Mato Grosso do Sul." },
+    { value: "1983", label: "ano de fundação", text: "Uma história construída ao lado do mercado da beleza." },
     { value: "40+", label: "anos de mercado", text: "Mais de quatro décadas construindo relações de confiança." },
     { value: "17", label: "marcas no portfólio", text: "Marcas profissionais e de varejo selecionadas pela Lopes." },
     { value: "5", label: "canais atendidos", text: "Salões, perfumarias, farmácias, supermercados e lojistas." },
@@ -209,5 +209,5 @@ export const portalCta = {
 
 export const footer = {
   description:
-    "Distribuidora de cosméticos e perfumarias desde 1983, conectando marcas e pontos de venda do mercado da beleza a partir de Campo Grande, MS.",
+    "Distribuidora de cosméticos e perfumarias desde 1983, conectando marcas e pontos de venda do mercado da beleza.",
 };

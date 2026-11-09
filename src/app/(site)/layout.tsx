@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter_Tight, JetBrains_Mono } from "next/font/google";
 import { InstitutionalFooter } from "@/components/institucional/InstitutionalFooter";
 import { InstitutionalHeader } from "@/components/institucional/InstitutionalHeader";
+import { ScrollEffects } from "@/components/institucional/ScrollEffects";
 import s from "@/components/institucional/site.module.css";
 import { company, seo } from "@/content/lopes";
 import "./site-globals.css";
@@ -52,6 +53,7 @@ export default function SiteLayout({ children }: { children: React.ReactNode }) 
         {children}
       </main>
       <InstitutionalFooter />
+      <ScrollEffects />
     </div>
   );
 }

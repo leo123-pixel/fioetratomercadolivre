@@ -151,17 +151,47 @@
   color: var(--gold);
 }
 
-/* Revelação de palavras ao rolar (ativada só com JS e sem prefers-reduced-motion). */
+/* Revelação de palavras ao rolar (ativada só com JS; animação apenas de opacidade). */
 .revealWord {
   display: inline;
-  transition: opacity 0.6s ease;
+  transition: opacity 0.7s ease;
 }
 [data-reveal="armed"] .revealWord {
-  opacity: 0.18;
+  opacity: 0.14;
 }
 [data-reveal="visible"] .revealWord {
   opacity: 1;
-  transition-delay: calc(var(--i, 0) * 45ms);
+  transition-delay: calc(var(--i, 0) * 70ms);
+}
+
+/* Entrada ao rolar: elementos com data-fx (o estado escondido só existe depois que o JS arma). */
+.fx {
+  transition:
+    opacity 0.8s ease var(--d, 0ms),
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) var(--d, 0ms);
+}
+.fx[data-fx="armed"] {
+  opacity: 0;
+  transform: translateY(28px);
+}
+.fx[data-fx="in"] {
+  opacity: 1;
+  transform: none;
+}
+
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--petrol);
+  animation: blink 0.9s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 /* ---------- Botões ---------- */
@@ -413,16 +443,6 @@
   scroll-margin-top: var(--header-h);
   overflow: hidden;
 }
-/* Linha fina que percorre a composição, como na referência. */
-.heroLine {
-  position: absolute;
-  top: clamp(40px, 5vw, 64px);
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--petrol) 12%, var(--petrol) 88%, transparent);
-  opacity: 0.35;
-}
 .heroInner {
   composes: container;
   position: relative;
@@ -488,6 +508,13 @@
   border-radius: 999px;
   background: rgb(250 249 244 / 0.6);
   color: var(--ink);
+  transition: opacity 0.4s ease, border-color 0.4s ease;
+}
+.step[data-state="idle"] {
+  opacity: 0.4;
+}
+.step[data-state="loading"] {
+  border-color: var(--petrol);
 }
 .stepCheck {
   display: grid;
@@ -497,6 +524,25 @@
   border-radius: 50%;
   background: var(--petrol);
   color: var(--on-dark);
+}
+.step[data-state="idle"] .stepCheck,
+.step[data-state="loading"] .stepCheck {
+  background: transparent;
+}
+.spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgb(5 56 57 / 0.2);
+  border-top-color: var(--petrol);
+  border-radius: 50%;
+}
+.step[data-state="loading"] .spinner {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .brandCard {
   position: relative;
@@ -512,14 +558,15 @@
   color: var(--on-dark);
   box-shadow: 0 30px 60px -30px rgb(3 42 43 / 0.7);
 }
+/* Arco decorativo no canto superior direito, longe do texto (que fica embaixo à esquerda). */
 .brandCard::before {
   content: "";
   position: absolute;
   z-index: -1;
-  right: -120px;
-  bottom: -160px;
-  width: 360px;
-  height: 360px;
+  top: -150px;
+  right: -150px;
+  width: 260px;
+  height: 260px;
   border: 1px solid rgb(203 162 92 / 0.45);
   border-radius: 50%;
 }
@@ -604,8 +651,29 @@
   width: max-content;
   animation: marquee 48s linear infinite;
 }
-.marquee:hover .marqueeTrack {
+.marquee:hover .marqueeTrack,
+.marquee[data-paused="true"] .marqueeTrack {
   animation-play-state: paused;
+}
+.brandsMeta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pauseButton {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.pauseButton:hover {
+  color: var(--ink);
+  border-color: var(--soft);
 }
 .marqueeList {
   display: flex;
@@ -714,15 +782,26 @@
   margin-top: clamp(24px, 4vw, 48px);
 }
 
+/*
+ * Pilha de camadas. O losango girado ocupa ~1,41× a largura do quadrado, então o tamanho é
+ * limitado pela largura da própria coluna (container query) para nunca invadir o texto ao lado.
+ */
+.layersWrap {
+  container-type: inline-size;
+  position: relative;
+  min-width: 0;
+  /* Folga proporcional à largura: a perspectiva 3D projeta a camada de baixo além da caixa. */
+  padding-bottom: 8%;
+}
 .layers {
   position: relative;
-  height: clamp(320px, 38vw, 460px);
+  height: clamp(320px, 110cqi, 570px);
   perspective: 1400px;
 }
 .layer {
   position: absolute;
   left: 50%;
-  width: min(78%, 400px);
+  width: min(54cqi, 320px);
   aspect-ratio: 1;
   border-radius: 22px;
   transform: translateX(-50%) rotateX(58deg) rotateZ(-45deg);
@@ -730,7 +809,29 @@
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
-  padding: 22px;
+  padding: 20px;
+  transition:
+    top 1.1s cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 0.8s ease;
+}
+/* Ao entrar na tela, as camadas partem empilhadas e se separam (como na referência). */
+.layers[data-fx="armed"] .layer {
+  top: 34%;
+  opacity: 0;
+}
+.layers[data-fx="armed"] .layerMiddle {
+  opacity: 1;
+}
+.layers[data-fx="in"] .layerTop {
+  transition-delay: 0.15s;
+}
+.layers[data-fx="in"] .layerBottom {
+  transition-delay: 0.3s;
+}
+.featureCol {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
 }
 .layerLabel {
   font-size: clamp(0.85rem, 0.7rem + 0.5vw, 1.05rem);
@@ -738,19 +839,19 @@
   letter-spacing: -0.01em;
 }
 .layerBottom {
-  top: 52%;
+  top: 56%;
   background: linear-gradient(135deg, #fff, #ecebe4);
   box-shadow: 0 40px 60px -20px rgb(24 32 31 / 0.25);
   color: var(--ink);
 }
 .layerMiddle {
-  top: 30%;
+  top: 34%;
   background: linear-gradient(135deg, var(--gold), #b38a45);
   box-shadow: 0 30px 50px -16px rgb(134 103 46 / 0.55);
   color: var(--petrol-deep);
 }
 .layerTop {
-  top: 8%;
+  top: 12%;
   background:
     radial-gradient(circle at 1px 1px, rgb(240 238 230 / 0.12) 1px, transparent 0) 0 0 / 14px 14px,
     linear-gradient(135deg, var(--petrol-2), var(--petrol-deep));
@@ -998,48 +1099,6 @@
 
 /* ---------- Contato ---------- */
 
-.contactGrid {
-  composes: container;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 12px;
-  margin-top: clamp(28px, 4vw, 44px);
-}
-.contactCard {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 28px;
-  min-height: 180px;
-  padding: 22px;
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--ink) !important;
-  text-decoration: none;
-  transition: background-color 0.2s ease;
-}
-a.contactCard:hover {
-  background: #fff;
-}
-.contactCardTop {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--muted);
-}
-.contactValue {
-  margin: 0;
-  font-size: clamp(1.3rem, 1.1rem + 0.8vw, 1.7rem);
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
-}
-.contactDetail {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 0.88rem;
-}
-
 /* ---------- CTA final + rodapé ---------- */
 
 .closing {
@@ -1070,19 +1129,105 @@ a.contactCard:hover {
   color: var(--on-dark);
   padding-bottom: 32px;
 }
-.wordmark {
+.footerTop {
   composes: container;
-  display: block;
-  margin: 0 auto;
-  font-size: clamp(5.5rem, 1rem + 22vw, 19rem);
-  font-weight: 600;
-  line-height: 0.82;
-  letter-spacing: -0.06em;
-  color: var(--on-dark);
-  user-select: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px 48px;
+  padding-top: clamp(16px, 3vw, 32px);
 }
-.wordmark span {
+.footerLogo {
+  display: inline-block;
+  line-height: 0;
+}
+.footerLogo img {
+  width: auto;
+  height: clamp(110px, 12vw, 150px);
+}
+.footerTop .footerSlogan {
+  margin: 0;
+  font-size: clamp(1.2rem, 1rem + 0.8vw, 1.6rem);
+  letter-spacing: -0.02em;
+  text-align: right;
+}
+
+/* ---------- Contato ---------- */
+
+.contactLayout {
+  composes: container;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: clamp(32px, 6vw, 96px);
+  align-items: start;
+}
+.contactHours {
+  margin: 18px 0 0;
+  color: var(--muted);
+}
+.channels {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.channels li {
+  border-bottom: 1px solid var(--line);
+}
+.channel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 8px;
+  border-radius: 12px;
+  color: var(--ink) !important;
+  text-decoration: none;
+  transition: background-color 0.25s ease, padding 0.25s ease;
+}
+.channel:hover {
+  padding-inline: 16px;
+  background: var(--card);
+}
+.channelIcon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--petrol);
   color: var(--gold);
+}
+.channelText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.channelText .mono {
+  color: var(--muted);
+}
+.channelValue {
+  overflow: hidden;
+  font-size: clamp(1.2rem, 1rem + 0.8vw, 1.6rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channelArrow {
+  color: var(--muted);
+  transition: transform 0.25s ease, color 0.25s ease;
+}
+.channel:hover .channelArrow {
+  color: var(--petrol);
+  transform: translate(3px, -3px);
+}
+.sectionTight {
+  padding-top: 0;
 }
 .footerGrid {
   composes: container;
@@ -1195,6 +1340,7 @@ a.contactCard:hover {
     display: none;
   }
   .heroBottom,
+  .contactLayout,
   .split,
   .bigCardHead,
   .bigCardBody,
@@ -1253,34 +1399,18 @@ a.contactCard:hover {
   .numberCard {
     min-height: 180px;
   }
-  .layers {
-    height: 380px;
-  }
-  .layer {
-    width: min(70%, 280px);
-  }
   .logo img {
     height: 40px;
   }
+  .footerTop .footerSlogan {
+    text-align: left;
+  }
+  .channel {
+    gap: 14px;
+  }
+  .channelIcon {
+    width: 44px;
+    height: 44px;
+  }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .site *,
-  .site *::before,
-  .site *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-  }
-  .marqueeTrack {
-    width: auto;
-  }
-  .marqueeList {
-    flex-wrap: wrap;
-    justify-content: center;
-    row-gap: 24px;
-  }
-  .marqueeList[aria-hidden="true"] {
-    display: none;
-  }
-}

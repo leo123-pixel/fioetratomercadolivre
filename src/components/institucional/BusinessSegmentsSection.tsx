@@ -4,13 +4,15 @@ import { Icon } from "./icons";
 import { PortalLink } from "./PortalLink";
 import s from "./site.module.css";
 
-function CheckList({ title, items }: { title: string; items: readonly string[] }) {
+const fx = (delay: number) => ({ "data-fx": "", style: { ["--d" as string]: `${delay}ms` } });
+
+function CheckList({ title, items, delay }: { title: string; items: readonly string[]; delay: number }) {
   return (
     <div>
       <h3 className={s.checkTitle}>{title}</h3>
       <ul className={s.checkList}>
-        {items.map((item) => (
-          <li key={item}>
+        {items.map((item, index) => (
+          <li key={item} className={s.fx} {...fx(delay + index * 90)}>
             <span className={s.checkIcon} aria-hidden="true">
               <Icon name="check" size={11} strokeWidth={3} />
             </span>
@@ -27,7 +29,7 @@ export function BusinessSegmentsSection() {
   return (
     <section id={SECTION_IDS.lojistas} className={s.section} aria-labelledby="lojistas-title">
       <div className={s.productCard}>
-        <div className={s.productCardInner}>
+        <div className={`${s.fx} ${s.productCardInner}`} {...fx(0)}>
           <div>
             <span className={s.labelLight}>{segments.label}</span>
             <h2 id="lojistas-title" className={s.h2}>
@@ -40,8 +42,8 @@ export function BusinessSegmentsSection() {
             </div>
           </div>
           <div className={s.checkCols}>
-            <CheckList title={segments.segmentsTitle} items={segments.items} />
-            <CheckList title={segments.marketsTitle} items={segments.markets} />
+            <CheckList title={segments.segmentsTitle} items={segments.items} delay={200} />
+            <CheckList title={segments.marketsTitle} items={segments.markets} delay={300} />
             <p className={s.policy}>{segments.policy}</p>
           </div>
         </div>

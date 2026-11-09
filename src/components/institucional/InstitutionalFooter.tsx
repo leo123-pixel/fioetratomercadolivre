@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { company, contact, footer } from "@/content/lopes";
 import { ADMIN_LOGIN_HREF, NAV_LINKS, PRIVACY_PATH, portalHref, telHref, whatsappHref } from "@/lib/site/links";
 import { socialLinks } from "./ContactSection";
@@ -10,23 +11,31 @@ export function InstitutionalFooter() {
   const whatsapp = whatsappHref(contact.whatsapp, contact.whatsappMessage);
   const phone = telHref(contact.phone);
   const socials = socialLinks();
-  const name = company.shortName.toLowerCase();
 
   return (
     <footer className={s.footer}>
-      {/* Nome da empresa em tipografia grande (não é o logotipo). */}
-      <p className={s.wordmark} aria-hidden="true">
-        {name.slice(0, -1)}
-        <span>{name.slice(-1)}</span>
-      </p>
+      <div className={s.footerTop}>
+        {/* Logo oficial (versão clara) — não usamos o nome em texto no lugar do logotipo. */}
+        {company.logoLight && (
+          <a href="/#inicio" className={`${s.fx} ${s.footerLogo}`} data-fx="" aria-label={`${company.name} — início`}>
+            <Image
+              src={company.logoLight.src}
+              alt={company.name}
+              width={company.logoLight.width}
+              height={company.logoLight.height}
+              loading="lazy"
+            />
+          </a>
+        )}
+        <p className={`${s.fx} ${s.footerSlogan}`} data-fx="" style={{ ["--d" as string]: "150ms" }}>
+          {company.slogan.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </p>
+      </div>
 
       <div className={s.footerGrid}>
         <div>
-          <p className={s.footerSlogan}>
-            {company.slogan.map((line) => (
-              <span key={line}>{line}</span>
-            ))}
-          </p>
           <p className={s.footerAbout}>{footer.description}</p>
         </div>
 
@@ -67,32 +76,37 @@ export function InstitutionalFooter() {
           <ul className={s.footerList}>
             {phone && (
               <li>
-                <a href={phone}>{contact.phone}</a>
+                <a href={phone}>
+                  <Icon name="phone" size={14} />
+                  {contact.phone}
+                </a>
               </li>
             )}
             {whatsapp && (
               <li>
                 <a href={whatsapp} rel="noopener">
-                  WhatsApp {contact.whatsapp}
+                  <Icon name="whatsapp" size={14} />
+                  {contact.whatsapp}
                 </a>
               </li>
             )}
             {contact.email && (
               <li>
-                <a href={`mailto:${contact.email}`}>{contact.email}</a>
+                <a href={`mailto:${contact.email}`}>
+                  <Icon name="mail" size={14} />
+                  {contact.email}
+                </a>
               </li>
             )}
             {socials.map((social) => (
               <li key={social.key}>
                 <a href={social.href} rel="noopener" target="_blank">
+                  <Icon name={social.key} size={14} />
                   {social.label}
                   <span className={s.srOnly}> (abre em nova aba)</span>
                 </a>
               </li>
             ))}
-            <li>
-              {company.city} — {company.stateCode}
-            </li>
           </ul>
         </div>
       </div>

@@ -12,14 +12,16 @@ export function B2BPortalCTA() {
         <h2 id="portal-title" className={s.h2}>
           <RevealText text={portalCta.title} />
         </h2>
-        <p className={s.lead} style={{ marginTop: 20, color: "rgb(240 238 230 / 0.75)" }}>
-          {portalCta.text}
-        </p>
-        <div className={s.closingActions}>
-          <PortalLink className={s.btnLight} label={portalCta.button} />
-          <a href={`#${SECTION_IDS.contato}`} className={s.btnGhostLight}>
-            {portalCta.secondary}
-          </a>
+        <div className={s.fx} data-fx="" style={{ ["--d" as string]: "200ms" }}>
+          <p className={s.lead} style={{ marginTop: 20, color: "rgb(240 238 230 / 0.75)" }}>
+            {portalCta.text}
+          </p>
+          <div className={s.closingActions}>
+            <PortalLink className={s.btnLight} label={portalCta.button} />
+            <a href={`#${SECTION_IDS.contato}`} className={s.btnGhostLight}>
+              {portalCta.secondary}
+            </a>
+          </div>
         </div>
       </div>
     </section>

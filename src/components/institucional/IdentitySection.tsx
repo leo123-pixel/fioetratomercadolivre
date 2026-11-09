@@ -3,6 +3,8 @@ import { SECTION_IDS } from "@/lib/site/links";
 import { RevealText } from "./RevealText";
 import s from "./site.module.css";
 
+const fx = (delay: number) => ({ "data-fx": "", style: { ["--d" as string]: `${delay}ms` } });
+
 /** Bloco escuro: propósito, missão, visão e valores (catálogo oficial). */
 export function IdentitySection() {
   return (
@@ -16,13 +18,15 @@ export function IdentitySection() {
           </h2>
         </div>
         <div className={s.darkText}>
-          <p>{identity.text}</p>
+          <p className={s.fx} {...fx(150)}>
+            {identity.text}
+          </p>
         </div>
       </div>
 
       <div className={s.statements}>
-        {identity.statements.map((item) => (
-          <div key={item.label} className={s.statement}>
+        {identity.statements.map((item, index) => (
+          <div key={item.label} className={`${s.fx} ${s.statement}`} {...fx(index * 150)}>
             <h3 className={s.mono}>{item.label}</h3>
             <p>{item.text}</p>
           </div>
@@ -32,8 +36,8 @@ export function IdentitySection() {
       <div className={s.valuesWrap}>
         <span className={s.labelLight}>{identity.valuesTitle}</span>
         <ul className={s.values}>
-          {identity.values.map((value) => (
-            <li key={value.title}>
+          {identity.values.map((value, index) => (
+            <li key={value.title} className={s.fx} {...fx(index * 90)}>
               <h4>{value.title}</h4>
               <p>{value.text}</p>
             </li>
