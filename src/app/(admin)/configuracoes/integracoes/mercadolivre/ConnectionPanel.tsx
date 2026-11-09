@@ -75,7 +75,7 @@ export function ConnectionPanel({ initial }: { initial: ConnectionSummary }) {
 
   async function logout() {
     await postJson("/api/admin/logout");
-    window.location.assign("/login");
+    window.location.assign("/");
   }
 
   const connected = summary.status === "connected";

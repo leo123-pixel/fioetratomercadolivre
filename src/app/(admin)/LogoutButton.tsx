@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-/** Encerra a sessão do administrador (remove o cookie no servidor) e volta para o login. */
+/** Encerra a sessão do administrador (remove o cookie no servidor) e volta para o site institucional. */
 export function LogoutButton() {
   const [pending, setPending] = useState(false);
 
@@ -11,7 +11,7 @@ export function LogoutButton() {
     try {
       await fetch("/api/admin/logout", { method: "POST", headers: { "content-type": "application/json" } });
     } finally {
-      window.location.assign("/login");
+      window.location.assign("/");
     }
   }
 
