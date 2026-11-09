@@ -7,9 +7,9 @@ import { company, seo } from "@/content/lopes";
 import "./site-globals.css";
 
 // Tipografia geométrica sem serifa, como no catálogo oficial da Lopes.
+// Fonte variável (um único arquivo cobre todos os pesos usados: 300–600).
 const font = Montserrat({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600"],
   display: "swap",
   variable: "--font-lopes",
 });
