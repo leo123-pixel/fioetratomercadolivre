@@ -17,6 +17,11 @@ export function InstitutionalFooter() {
       <div className={s.footerGrid}>
         <div className={s.footerBrand}>
           <Logo light />
+          <p className={s.footerSlogan}>
+            {company.slogan.map((line) => (
+              <span key={line}>{line}</span>
+            ))}
+          </p>
           <p className={s.footerAbout}>{footer.description}</p>
         </div>
 

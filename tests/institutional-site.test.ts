@@ -90,6 +90,8 @@ describe("site institucional: dados", () => {
     if (!company.cnpj) expect(data).not.toHaveProperty("taxID");
     if (!contact.phone) expect(data).not.toHaveProperty("telephone");
     if (!contact.email) expect(data).not.toHaveProperty("email");
-    expect(data).not.toHaveProperty("foundingDate");
+    // Ano de fundação confirmado no catálogo oficial ("Desde 1983").
+    expect(data.foundingDate).toBe("1983");
+    if (contact.phone) expect(data.telephone).toBe("+556733821892");
   });
 });

@@ -11,7 +11,7 @@ import s from "./site.module.css";
 export function BrandsSection() {
   const items: Brand[] = brands.items;
   return (
-    <section id={SECTION_IDS.marcas} className={s.section} aria-labelledby="marcas-title">
+    <section id={SECTION_IDS.marcas} className={s.sectionBeige} aria-labelledby="marcas-title">
       <div className={s.container}>
         <div className={s.sectionHead}>
           <p className={s.eyebrow}>{brands.eyebrow}</p>
@@ -22,11 +22,21 @@ export function BrandsSection() {
         </div>
         <ul className={s.brandGrid}>
           {items.map((brand) => (
-            <li key={brand.name} className={s.brandItem}>
+            <li key={`${brand.name}-${brand.detail ?? ""}`} className={s.brandItem}>
               {brand.logo ? (
-                <Image src={brand.logo} alt={brand.name} width={140} height={56} loading="lazy" className={s.brandLogo} />
+                <Image
+                  src={brand.logo}
+                  alt={[brand.name, brand.detail].filter(Boolean).join(" ")}
+                  width={150}
+                  height={56}
+                  loading="lazy"
+                  className={s.brandLogo}
+                />
               ) : (
-                <span className={s.brandName}>{brand.name}</span>
+                <>
+                  <span className={s.brandName}>{brand.name}</span>
+                  {brand.detail && <span className={s.brandDetail}>{brand.detail}</span>}
+                </>
               )}
             </li>
           ))}

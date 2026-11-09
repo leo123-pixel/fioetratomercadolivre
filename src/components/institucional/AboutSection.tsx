@@ -1,11 +1,12 @@
 import Image from "next/image";
 import { about } from "@/content/lopes";
 import { SECTION_IDS } from "@/lib/site/links";
+import { Emphasis } from "./Emphasis";
 import s from "./site.module.css";
 
 export function AboutSection() {
   return (
-    <section id={SECTION_IDS.sobre} className={s.section} aria-labelledby="sobre-title">
+    <section id={SECTION_IDS.sobre} className={s.sectionBeige} aria-labelledby="sobre-title">
       <div className={s.aboutGrid}>
         <div>
           <p className={s.eyebrow}>{about.eyebrow}</p>
@@ -17,7 +18,12 @@ export function AboutSection() {
               <p key={paragraph.slice(0, 32)}>{paragraph}</p>
             ))}
           </div>
-          <p className={s.commitment}>{about.commitment}</p>
+          <blockquote className={s.objective}>
+            <p className={s.objectiveIntro}>{about.objectiveIntro}</p>
+            <p className={s.objectiveText}>
+              <Emphasis text={about.objective} emphasis={about.objectiveEmphasis} className={s.highlight} />
+            </p>
+          </blockquote>
         </div>
 
         <div>

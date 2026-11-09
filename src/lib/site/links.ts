@@ -17,6 +17,7 @@ export const ADMIN_LOGIN_HREF = "/login?next=%2Fprodutos";
 export const SECTION_IDS = {
   inicio: "inicio",
   sobre: "sobre",
+  quemSomos: "quem-somos",
   diferenciais: "diferenciais",
   marcas: "marcas",
   lojistas: "lojistas",

@@ -90,6 +90,19 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M3.5 12.5h17" />
     </>
   ),
+  pharmacy: (
+    <>
+      <rect x="3.5" y="3.5" width="17" height="17" rx="3" />
+      <path d="M12 8v8M8 12h8" />
+    </>
+  ),
+  cart: (
+    <>
+      <path d="M3 4h2.5l2 11h10.5l2-8H6.5" />
+      <circle cx="9" cy="19" r="1.4" />
+      <circle cx="17" cy="19" r="1.4" />
+    </>
+  ),
   pin: (
     <>
       <path d="M12 21s-6.5-5.6-6.5-11A6.5 6.5 0 0 1 18.5 10c0 5.4-6.5 11-6.5 11z" />

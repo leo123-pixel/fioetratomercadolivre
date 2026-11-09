@@ -22,7 +22,7 @@ export function ContactSection() {
   const hasChannels = Boolean(phone || contact.email || contact.hours || whatsapp);
 
   return (
-    <section id={SECTION_IDS.contato} className={s.section} aria-labelledby="contato-title">
+    <section id={SECTION_IDS.contato} className={s.sectionBeige} aria-labelledby="contato-title">
       <div className={s.container}>
         <div className={s.sectionHead}>
           <p className={s.eyebrow}>{contactSection.eyebrow}</p>

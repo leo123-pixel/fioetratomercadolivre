@@ -1,38 +1,43 @@
 /*
  * Site institucional Lopes Cosméticos — estilos isolados (CSS Modules).
- * Tokens de marca centralizados em .site: ajuste aqui para alinhar ao manual de marca oficial.
+ * Identidade visual extraída do catálogo oficial Lopes 2026: verde-petróleo, dourado, bege e
+ * tipografia geométrica sem serifa. Tokens centralizados em .site.
  */
 
 .site {
-  --ink: #1b1716;
-  --ink-soft: #2a2422;
-  --paper: #fbf8f4;
-  --sand: #f3ece3;
-  --sand-deep: #e9dfd2;
-  --line: #e2d8cb;
-  --text: #241f1d;
-  --muted: #645a53;
-  --accent: #7d2a3c;
-  --accent-hover: #64202f;
-  --gold: #a88655;
-  --on-dark: #f6f1ea;
-  --on-dark-muted: #c9bfb4;
+  /* Paleta oficial (catálogo) */
+  --petrol: #053839;
+  --petrol-soft: #0f4041;
+  --petrol-deep: #032a2b;
+  --gold: #cba25c;
+  /* Dourado escurecido para texto pequeno em fundo claro (contraste AA) */
+  --gold-text: #86672e;
+  /* Dourado para destaques grandes em fundo claro (contraste >= 3:1) */
+  --gold-strong: #a8823f;
+  --beige: #e7e2d9;
+  --paper: #f5f2ec;
+  --white: #ffffff;
+  --line: #ddd6ca;
+  --text: #173c3d;
+  --muted: #526868;
+  --on-dark: #f3f0ea;
+  --on-dark-muted: #b9c7c6;
+
   --radius: 14px;
   --radius-sm: 10px;
-  --shadow: 0 1px 2px rgb(27 23 22 / 0.04), 0 12px 32px -12px rgb(27 23 22 / 0.14);
+  --shadow: 0 1px 2px rgb(5 56 57 / 0.05), 0 14px 34px -16px rgb(5 56 57 / 0.22);
   --container: 1200px;
   --gutter: clamp(16px, 4vw, 40px);
-  --header-h: 72px;
-  --font-display: var(--font-lopes-display), "Times New Roman", serif;
-  --font-body: var(--font-lopes-body), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --header-h: 76px;
+  --font: var(--font-lopes), "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
 
   color-scheme: light;
   min-height: 100vh;
   background: var(--paper);
   color: var(--text);
-  font-family: var(--font-body);
+  font-family: var(--font);
   font-size: 1rem;
-  line-height: 1.65;
+  line-height: 1.7;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: clip;
@@ -49,7 +54,7 @@
 }
 
 .site :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--gold-strong);
   outline-offset: 3px;
   border-radius: 4px;
 }
@@ -68,7 +73,7 @@
   z-index: 100;
   padding: 10px 16px;
   border-radius: 8px;
-  background: var(--ink);
+  background: var(--petrol);
   color: var(--on-dark) !important;
   font-weight: 600;
   text-decoration: none;
@@ -92,21 +97,14 @@
 /* ---------- Tipografia ---------- */
 
 .eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 18px;
-  color: var(--accent);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  display: block;
+  margin: 0 0 20px;
+  color: var(--gold-text);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  line-height: 1.6;
   text-transform: uppercase;
-}
-.eyebrow::before {
-  content: "";
-  width: 28px;
-  height: 1px;
-  background: currentColor;
 }
 .eyebrowLight {
   composes: eyebrow;
@@ -115,20 +113,35 @@
 
 .h2 {
   margin: 0;
-  font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2rem, 1.3rem + 2.6vw, 3.1rem);
-  line-height: 1.08;
-  letter-spacing: -0.01em;
-  color: var(--ink);
+  font-size: clamp(1.85rem, 1.2rem + 2.3vw, 2.8rem);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  color: var(--petrol);
   text-wrap: balance;
+}
+/* Filete dourado curto sob o título, como no catálogo. */
+.h2::after {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 2px;
+  margin-top: 22px;
+  background: var(--gold);
+}
+
+.highlight {
+  color: var(--gold-strong);
+}
+.highlightLight {
+  color: var(--gold);
 }
 
 .lead {
-  margin: 20px 0 0;
-  max-width: 60ch;
+  margin: 22px 0 0;
+  max-width: 62ch;
   color: var(--muted);
-  font-size: 1.075rem;
+  font-size: 1.05rem;
 }
 
 .sectionHead {
@@ -137,12 +150,20 @@
 }
 
 .section {
-  padding-block: clamp(72px, 10vw, 128px);
+  padding-block: clamp(72px, 10vw, 124px);
   scroll-margin-top: var(--header-h);
 }
-.sectionSand {
+.sectionBeige {
   composes: section;
-  background: var(--sand);
+  background: var(--beige);
+}
+.sectionDark {
+  composes: section;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--petrol);
+  color: var(--on-dark);
 }
 
 /* ---------- Botões ---------- */
@@ -153,17 +174,17 @@
   justify-content: center;
   gap: 10px;
   min-height: 48px;
-  padding: 12px 24px;
+  padding: 12px 26px;
   border: 1px solid transparent;
   border-radius: 999px;
-  font-family: var(--font-body);
-  font-size: 0.95rem;
+  font-family: var(--font);
+  font-size: 0.92rem;
   font-weight: 600;
   line-height: 1.2;
   text-align: center;
   text-decoration: none;
   cursor: pointer;
-  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .btn svg {
   flex: none;
@@ -175,53 +196,43 @@
 
 .btnPrimary {
   composes: btn;
-  background: var(--accent);
-  color: #fff !important;
+  background: var(--petrol);
+  color: var(--white) !important;
 }
 .btnPrimary:hover {
-  background: var(--accent-hover);
+  background: var(--petrol-soft);
 }
 
 .btnOutline {
   composes: btn;
-  border-color: var(--ink);
-  color: var(--ink) !important;
+  border-color: var(--petrol);
+  color: var(--petrol) !important;
   background: transparent;
 }
 .btnOutline:hover {
-  background: var(--ink);
-  color: var(--on-dark) !important;
+  background: var(--petrol);
+  color: var(--white) !important;
 }
 
-.btnLight {
+.btnGold {
   composes: btn;
-  background: var(--on-dark);
-  color: var(--ink) !important;
+  background: var(--gold);
+  color: var(--petrol-deep) !important;
 }
-.btnLight:hover {
-  background: #fff;
-}
-
-.btnGhostLight {
-  composes: btn;
-  border-color: rgb(246 241 234 / 0.4);
-  color: var(--on-dark) !important;
-}
-.btnGhostLight:hover {
-  border-color: var(--on-dark);
-  background: rgb(246 241 234 / 0.08);
+.btnGold:hover {
+  background: #d8b474;
 }
 
 .btnSmall {
   min-height: 42px;
-  padding: 9px 18px;
-  font-size: 0.875rem;
+  padding: 9px 20px;
+  font-size: 0.85rem;
 }
 
 .btnCaps {
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 
 /* ---------- Cabeçalho ---------- */
@@ -230,15 +241,15 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgb(251 248 244 / 0.9);
-  backdrop-filter: saturate(1.4) blur(12px);
-  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  background: rgb(245 242 236 / 0.92);
+  backdrop-filter: saturate(1.3) blur(12px);
+  -webkit-backdrop-filter: saturate(1.3) blur(12px);
   border-bottom: 1px solid transparent;
   transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 .headerScrolled {
   border-bottom-color: var(--line);
-  box-shadow: 0 6px 24px -18px rgb(27 23 22 / 0.35);
+  box-shadow: 0 6px 24px -18px rgb(5 56 57 / 0.4);
 }
 
 .headerInner {
@@ -251,46 +262,38 @@
 
 .logo {
   display: inline-flex;
-  flex-direction: column;
-  justify-content: center;
-  text-decoration: none;
-  line-height: 1;
-  color: var(--ink) !important;
+  align-items: center;
   flex: none;
+  line-height: 0;
+  text-decoration: none;
 }
-.logoMark {
-  font-family: var(--font-display);
-  font-size: 1.85rem;
+.logo img {
+  display: block;
+  width: auto;
+  height: 54px;
+}
+.logoFooter img {
+  height: 84px;
+}
+.logoText {
+  color: var(--petrol);
+  font-size: 1.5rem;
   font-weight: 600;
-  letter-spacing: 0.01em;
-}
-.logoSub {
-  margin-top: 4px;
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.34em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.logoLight {
-  composes: logo;
-  color: var(--on-dark) !important;
-}
-.logoLight .logoSub {
-  color: var(--gold);
+  letter-spacing: 0.2em;
+  line-height: 1;
 }
 
 .nav {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   margin-inline: auto;
 }
 .navLink {
   position: relative;
   padding: 8px 12px;
   color: var(--text) !important;
-  font-size: 0.92rem;
+  font-size: 0.86rem;
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
@@ -301,8 +304,8 @@
   left: 12px;
   right: 12px;
   bottom: 2px;
-  height: 1px;
-  background: var(--accent);
+  height: 2px;
+  background: var(--gold);
   transform: scaleX(0);
   transform-origin: left;
   transition: transform 0.25s ease;
@@ -323,13 +326,13 @@
   align-items: center;
   gap: 6px;
   color: var(--muted) !important;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
 }
 .adminLink:hover {
-  color: var(--ink) !important;
+  color: var(--petrol) !important;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -344,7 +347,7 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   background: transparent;
-  color: var(--ink);
+  color: var(--petrol);
   cursor: pointer;
 }
 
@@ -393,9 +396,9 @@
   display: block;
   padding: 16px 0;
   border-bottom: 1px solid var(--line);
-  color: var(--ink) !important;
-  font-family: var(--font-display);
-  font-size: 1.6rem;
+  color: var(--petrol) !important;
+  font-size: 1.3rem;
+  font-weight: 500;
   text-decoration: none;
 }
 .mobileActions {
@@ -413,12 +416,22 @@
 .hero {
   position: relative;
   overflow: hidden;
-  padding-block: clamp(56px, 9vw, 112px) clamp(72px, 10vw, 128px);
+  isolation: isolate;
+  padding-block: clamp(56px, 8vw, 104px) clamp(72px, 10vw, 124px);
   scroll-margin-top: var(--header-h);
-  background:
-    radial-gradient(1200px 600px at 100% 0%, rgb(168 134 85 / 0.12), transparent 60%),
-    radial-gradient(900px 500px at 0% 100%, rgb(125 42 60 / 0.07), transparent 60%),
-    var(--paper);
+  background: var(--paper);
+}
+/* Arco fino, como nas páginas do catálogo. */
+.hero::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -340px;
+  left: -260px;
+  width: 760px;
+  height: 760px;
+  border: 1px solid rgb(203 162 92 / 0.35);
+  border-radius: 50%;
 }
 
 .heroGrid {
@@ -431,24 +444,23 @@
 
 .heroTitle {
   margin: 0;
-  font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2.6rem, 1.4rem + 4.6vw, 4.9rem);
-  line-height: 1.02;
-  letter-spacing: -0.015em;
-  color: var(--ink);
+  font-size: clamp(2.25rem, 1.2rem + 3.9vw, 4rem);
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  color: var(--petrol);
   text-wrap: balance;
 }
 .heroTitle em {
-  font-style: italic;
-  color: var(--accent);
+  font-style: normal;
+  color: var(--gold-strong);
 }
 
 .heroSubtitle {
   margin: 28px 0 0;
   max-width: 54ch;
   color: var(--muted);
-  font-size: clamp(1.05rem, 1rem + 0.3vw, 1.2rem);
+  font-size: clamp(1.02rem, 0.98rem + 0.25vw, 1.15rem);
 }
 
 .heroActions {
@@ -464,10 +476,11 @@
   gap: 10px;
   margin: 28px 0 0;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 .heroNote::before {
   content: "";
+  flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -480,27 +493,30 @@
   overflow: hidden;
   padding: clamp(32px, 4vw, 48px);
   border-radius: 24px;
-  background: var(--ink);
+  background: var(--petrol);
   color: var(--on-dark);
-  box-shadow: 0 40px 80px -40px rgb(27 23 22 / 0.55);
+  box-shadow: 0 40px 80px -40px rgb(5 56 57 / 0.6);
 }
 .heroCard::before {
   content: "";
   position: absolute;
-  inset: auto -30% -45% auto;
+  inset: auto -38% -52% auto;
   z-index: -1;
-  width: 420px;
-  height: 420px;
-  border: 1px solid rgb(168 134 85 / 0.35);
+  width: 440px;
+  height: 440px;
+  border: 1px solid rgb(203 162 92 / 0.4);
   border-radius: 50%;
-  box-shadow: 0 0 0 40px rgb(168 134 85 / 0.06), 0 0 0 80px rgb(168 134 85 / 0.04);
 }
 .heroCard::after {
   content: "";
   position: absolute;
-  inset: 0;
   z-index: -1;
-  background: radial-gradient(500px 300px at 0% 0%, rgb(125 42 60 / 0.45), transparent 70%);
+  top: -120px;
+  left: -120px;
+  width: 300px;
+  height: 300px;
+  border: 1px solid rgb(243 240 234 / 0.08);
+  border-radius: 50%;
 }
 
 .heroImage {
@@ -513,49 +529,61 @@
   object-fit: cover;
 }
 
-.yearsNumber {
-  display: block;
-  font-family: var(--font-display);
-  font-size: clamp(5rem, 3rem + 7vw, 8.5rem);
-  font-weight: 500;
-  line-height: 0.9;
-  letter-spacing: -0.03em;
-  color: var(--on-dark);
-}
 .yearsLabel {
   display: block;
-  margin-top: 12px;
   color: var(--gold);
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
 }
+.yearsNumber {
+  display: block;
+  margin-top: 6px;
+  font-size: clamp(4.2rem, 2.6rem + 5.5vw, 6.6rem);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--on-dark);
+}
+.cardRule {
+  display: block;
+  width: 44px;
+  height: 2px;
+  margin: 26px 0;
+  background: var(--gold);
+}
 .heroCardText {
-  margin: 20px 0 0;
-  color: var(--on-dark-muted);
-  font-family: var(--font-display);
-  font-size: 1.35rem;
-  line-height: 1.35;
+  margin: 0;
+  font-size: 1.12rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.heroCardText span {
+  display: block;
+}
+.heroCardText span + span {
+  color: var(--gold);
 }
 .heroList {
-  margin: 32px 0 0;
+  margin: 30px 0 0;
   padding: 24px 0 0;
-  border-top: 1px solid rgb(246 241 234 / 0.16);
+  border-top: 1px solid rgb(243 240 234 / 0.14);
   list-style: none;
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  color: var(--on-dark-muted);
 }
 .heroList li {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 0.92rem;
+  font-size: 0.86rem;
 }
 .heroList li::before {
   content: "";
   flex: none;
-  width: 18px;
+  width: 16px;
   height: 1px;
   background: var(--gold);
 }
@@ -591,34 +619,41 @@
 .prose p {
   margin: 0 0 18px;
   color: var(--muted);
-  font-size: 1.05rem;
+  font-size: 1.02rem;
 }
 .prose p:first-of-type {
-  margin-top: 28px;
+  margin-top: 32px;
 }
-.commitment {
-  margin: 32px 0 0;
-  padding: 4px 0 4px 24px;
+.objective {
+  margin: 40px 0 0;
+  padding: 4px 0 4px 26px;
   border-left: 2px solid var(--gold);
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: clamp(1.35rem, 1.1rem + 0.8vw, 1.7rem);
-  line-height: 1.35;
+}
+.objectiveIntro {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.objectiveText {
+  margin: 0;
+  color: var(--petrol);
+  font-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.6rem);
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .chainCard {
   padding: clamp(28px, 4vw, 44px);
-  border: 1px solid var(--line);
   border-radius: 20px;
-  background: #fff;
+  background: var(--white);
   box-shadow: var(--shadow);
 }
 .chainTitle {
   margin: 0 0 28px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  color: var(--gold-text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
 }
 .chain {
@@ -652,29 +687,29 @@
   height: 44px;
   border: 1px solid var(--line);
   border-radius: 50%;
-  background: #fff;
+  background: var(--white);
   color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 700;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 .chainItemHighlight .chainDot {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--petrol);
+  background: var(--petrol);
+  color: var(--gold);
 }
 .chainLabel {
   display: block;
-  margin-top: 2px;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 1.4rem;
-  line-height: 1.2;
+  margin-top: 4px;
+  color: var(--petrol);
+  font-size: 1.08rem;
+  font-weight: 600;
+  line-height: 1.3;
 }
 .chainText {
   display: block;
   margin-top: 4px;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
 
 .aboutImage {
@@ -686,6 +721,93 @@
 }
 .aboutImage img {
   object-fit: cover;
+}
+
+/* ---------- Quem somos (propósito, missão, visão, valores) ---------- */
+
+.sectionDark::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  bottom: -420px;
+  left: -300px;
+  width: 820px;
+  height: 820px;
+  border: 1px solid rgb(203 162 92 / 0.22);
+  border-radius: 50%;
+}
+.statements {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+.statement {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.32fr) 1fr;
+  gap: 24px;
+  padding: 26px 0;
+  border-top: 1px solid rgb(243 240 234 / 0.12);
+}
+.statement:last-child {
+  border-bottom: 1px solid rgb(243 240 234 / 0.12);
+}
+.statement dt {
+  padding-top: 6px;
+  color: var(--gold);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+.statement dd {
+  margin: 0;
+  color: var(--on-dark);
+  font-size: clamp(1.05rem, 0.98rem + 0.4vw, 1.3rem);
+  font-weight: 400;
+  line-height: 1.55;
+}
+.valuesTitle {
+  margin: clamp(48px, 7vw, 72px) 0 28px;
+  color: var(--gold);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+.valuesTitle::before {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 2px;
+  margin-bottom: 24px;
+  background: var(--gold);
+}
+.values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px 40px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.valueTitle {
+  margin: 0;
+  color: var(--gold);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.valueText {
+  margin: 6px 0 0;
+  color: var(--on-dark-muted);
+  font-size: 0.92rem;
+}
+.closing {
+  margin: clamp(56px, 8vw, 88px) 0 0;
+  color: var(--on-dark);
+  font-size: clamp(1.4rem, 1.1rem + 1.2vw, 2rem);
+  font-weight: 400;
+  line-height: 1.3;
+  text-align: center;
 }
 
 /* ---------- Cards (diferenciais e segmentos) ---------- */
@@ -702,15 +824,14 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 28px 26px 30px;
-  border: 1px solid var(--line);
+  padding: 28px 24px 30px;
   border-radius: var(--radius);
-  background: var(--paper);
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  background: var(--white);
+  box-shadow: 0 1px 2px rgb(5 56 57 / 0.04);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 .card:hover {
   transform: translateY(-3px);
-  border-color: var(--sand-deep);
   box-shadow: var(--shadow);
 }
 .cardIcon {
@@ -718,27 +839,22 @@
   place-items: center;
   width: 48px;
   height: 48px;
-  margin-bottom: 24px;
-  border-radius: 12px;
-  background: var(--sand);
-  color: var(--accent);
+  margin-bottom: 22px;
+  border-radius: 50%;
+  background: var(--petrol);
+  color: var(--gold);
 }
 .cardTitle {
   margin: 0;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 1.45rem;
+  color: var(--petrol);
+  font-size: 1.05rem;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.35;
 }
 .cardText {
   margin: 10px 0 0;
   color: var(--muted);
-  font-size: 0.95rem;
-}
-
-.sectionSand .card {
-  background: #fff;
+  font-size: 0.92rem;
 }
 
 /* ---------- Marcas ---------- */
@@ -746,37 +862,46 @@
 .brandGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
-  border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
 }
 .brandItem {
-  display: grid;
-  place-items: center;
-  min-height: 112px;
-  padding: 20px 16px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  padding: 18px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--white);
   text-align: center;
-  transition: background-color 0.25s ease;
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
 }
 .brandItem:hover {
-  background: var(--paper);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
 }
 .brandName {
-  color: var(--ink);
-  font-size: 0.88rem;
+  color: var(--petrol);
+  font-size: 0.98rem;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  line-height: 1.4;
+  letter-spacing: 0.14em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+.brandDetail {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 500;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
 }
 .brandLogo {
   width: auto;
-  max-width: 140px;
+  max-width: 150px;
   height: auto;
   max-height: 56px;
   object-fit: contain;
@@ -785,7 +910,7 @@
   margin: 24px 0 0;
   max-width: 80ch;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 /* ---------- Segmentos ---------- */
@@ -801,25 +926,24 @@
   gap: 20px;
   align-items: start;
   padding: 28px clamp(24px, 4vw, 40px);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
   border-radius: var(--radius);
-  background: var(--ink);
-  color: var(--on-dark);
+  background: var(--paper);
 }
 .b2bBox .cardIcon {
   margin: 0;
-  background: rgb(246 241 234 / 0.08);
-  color: var(--gold);
 }
 .b2bTitle {
   margin: 0;
-  font-family: var(--font-display);
-  font-size: 1.5rem;
-  font-weight: 500;
+  color: var(--petrol);
+  font-size: 1.15rem;
+  font-weight: 600;
 }
 .b2bText {
   margin: 6px 0 0;
-  color: var(--on-dark-muted);
-  font-size: 0.97rem;
+  color: var(--muted);
+  font-size: 0.95rem;
 }
 
 /* ---------- CTA Portal B2B ---------- */
@@ -828,52 +952,49 @@
   position: relative;
   overflow: hidden;
   isolation: isolate;
-  padding-block: clamp(80px, 11vw, 140px);
+  padding-block: clamp(80px, 11vw, 136px);
   scroll-margin-top: var(--header-h);
-  background: var(--ink);
+  background: var(--petrol-deep);
   color: var(--on-dark);
 }
 .cta::before {
   content: "";
   position: absolute;
   z-index: -1;
-  top: -260px;
-  right: -200px;
-  width: 640px;
-  height: 640px;
-  border: 1px solid rgb(168 134 85 / 0.3);
+  top: 50%;
+  left: 50%;
+  width: 900px;
+  height: 900px;
+  border: 1px solid rgb(203 162 92 / 0.22);
   border-radius: 50%;
-  box-shadow: 0 0 0 60px rgb(168 134 85 / 0.05), 0 0 0 120px rgb(168 134 85 / 0.03);
-}
-.cta::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  background: radial-gradient(700px 400px at 0% 100%, rgb(125 42 60 / 0.5), transparent 70%);
+  transform: translate(-50%, -50%);
 }
 .ctaInner {
   composes: container;
-  max-width: 920px;
+  max-width: 900px;
   text-align: center;
-}
-.ctaInner .eyebrowLight {
-  justify-content: center;
 }
 .ctaTitle {
   margin: 0;
-  font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2.3rem, 1.4rem + 3.6vw, 4rem);
-  line-height: 1.05;
-  letter-spacing: -0.01em;
+  font-size: clamp(2rem, 1.3rem + 3vw, 3.4rem);
+  line-height: 1.12;
+  letter-spacing: -0.02em;
   text-wrap: balance;
 }
+.ctaTitle::after {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 2px;
+  margin: 26px auto 0;
+  background: var(--gold);
+}
 .ctaText {
-  margin: 24px auto 0;
+  margin: 26px auto 0;
   max-width: 52ch;
   color: var(--on-dark-muted);
-  font-size: 1.1rem;
+  font-size: 1.08rem;
 }
 .ctaActions {
   display: flex;
@@ -885,7 +1006,7 @@
 .ctaNote {
   margin: 20px 0 0;
   color: var(--on-dark-muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 .devNotice {
@@ -911,35 +1032,35 @@
 }
 .contactCard {
   padding: 28px;
-  border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--white);
+  box-shadow: 0 1px 2px rgb(5 56 57 / 0.04);
 }
 .contactCardTitle {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 0 0 16px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  color: var(--gold-text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
 }
 .contactCardTitle svg {
-  color: var(--accent);
+  color: var(--gold-strong);
 }
 .contactValue {
   margin: 0;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 1.45rem;
-  line-height: 1.3;
+  color: var(--petrol);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
 }
 .contactDetail {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.92rem;
 }
 .contactList {
   display: grid;
@@ -953,13 +1074,13 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: var(--ink) !important;
-  font-weight: 500;
+  color: var(--petrol) !important;
+  font-weight: 600;
   text-decoration: none;
 }
 .contactList a:hover,
 .contactLink:hover {
-  color: var(--accent) !important;
+  color: var(--gold-strong) !important;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -974,9 +1095,9 @@
 
 .footer {
   padding-block: clamp(56px, 8vw, 88px) 32px;
-  background: #141110;
+  background: var(--petrol);
   color: var(--on-dark-muted);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
 .footerGrid {
   composes: container;
@@ -984,16 +1105,30 @@
   grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
   gap: 40px;
 }
+.footerBrand {
+  min-width: 0;
+}
 .footerAbout {
-  margin: 20px 0 0;
+  margin: 24px 0 0;
   max-width: 40ch;
+}
+.footerSlogan {
+  margin: 16px 0 0;
+  color: var(--on-dark);
+  font-weight: 500;
+}
+.footerSlogan span {
+  display: block;
+}
+.footerSlogan span + span {
+  color: var(--gold);
 }
 .footerTitle {
   margin: 0 0 16px;
-  color: var(--on-dark);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  color: var(--gold);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
 }
 .footerList {
@@ -1023,14 +1158,12 @@
   gap: 12px 24px;
   margin-top: clamp(40px, 6vw, 64px);
   padding-top: 24px;
-  border-top: 1px solid rgb(246 241 234 / 0.12);
-  font-size: 0.82rem;
+  border-top: 1px solid rgb(243 240 234 / 0.12);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
 }
 .footerBottom p {
   margin: 0;
-}
-.footerBottom a {
-  color: var(--on-dark-muted) !important;
 }
 
 /* ---------- Página de texto (política de privacidade) ---------- */
@@ -1044,24 +1177,23 @@
 }
 .legalTitle {
   margin: 0;
-  font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2.2rem, 1.6rem + 2.4vw, 3.2rem);
-  line-height: 1.1;
-  color: var(--ink);
+  font-size: clamp(2rem, 1.5rem + 2vw, 2.8rem);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  color: var(--petrol);
 }
 .legalUpdated {
   margin: 12px 0 40px;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 .legal h2 {
   margin: 40px 0 12px;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 1.6rem;
+  color: var(--petrol);
+  font-size: 1.2rem;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 .legal p,
 .legal li {
@@ -1071,7 +1203,8 @@
   padding-left: 20px;
 }
 .legal a {
-  color: var(--accent) !important;
+  color: var(--petrol) !important;
+  font-weight: 600;
 }
 
 /* ---------- Responsivo ---------- */
@@ -1084,6 +1217,9 @@
   .heroCard {
     max-width: 560px;
   }
+  .values {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .footerGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1092,8 +1228,17 @@
   }
 }
 
+@media (max-width: 640px) {
+  .statement {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .statement dt {
+    padding-top: 0;
+  }
+}
+
 @media (max-width: 560px) {
-  .heroActions .btn,
   .heroActions a,
   .ctaActions a,
   .contactActions a {
@@ -1102,11 +1247,23 @@
   .b2bBox {
     grid-template-columns: minmax(0, 1fr);
   }
+  .values,
   .footerGrid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .brandGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .brandItem {
-    min-height: 92px;
+    min-height: 84px;
+    padding: 14px 10px;
+  }
+  .brandName {
+    font-size: 0.84rem;
+    letter-spacing: 0.1em;
+  }
+  .logo img {
+    height: 48px;
   }
 }
 

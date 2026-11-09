@@ -21,6 +21,8 @@ export function organizationJsonLd(): Record<string, unknown> {
       ...(contact.address ? { streetAddress: contact.address } : {}),
     },
     areaServed: { "@type": "State", name: company.state },
+    foundingDate: String(company.foundingYear),
+    slogan: company.slogan.join(" "),
   };
   if (company.legalName) data.legalName = company.legalName;
   if (company.cnpj) data.taxID = company.cnpj;

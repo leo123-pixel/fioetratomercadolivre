@@ -5,7 +5,7 @@ import s from "./site.module.css";
 
 export function BusinessSegmentsSection() {
   return (
-    <section id={SECTION_IDS.lojistas} className={s.sectionSand} aria-labelledby="lojistas-title">
+    <section id={SECTION_IDS.lojistas} className={s.section} aria-labelledby="lojistas-title">
       <div className={s.container}>
         <div className={s.sectionHead}>
           <p className={s.eyebrow}>{segments.eyebrow}</p>

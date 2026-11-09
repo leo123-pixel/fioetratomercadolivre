@@ -3,19 +3,21 @@ import { company } from "@/content/lopes";
 import s from "./site.module.css";
 
 /**
- * Logo da Lopes Cosméticos. Usa o arquivo oficial quando `company.logo` estiver configurado;
- * até lá, exibe o nome da empresa em texto (não é uma recriação do logotipo).
+ * Logo oficial da Lopes Cosméticos (extraído do catálogo da empresa).
+ * `light` usa a versão clara, para fundos verde-petróleo.
  */
 export function Logo({ light = false }: { light?: boolean }) {
+  const file = light ? company.logoLight : company.logo;
   return (
-    <a href="/#inicio" className={light ? s.logoLight : s.logo} aria-label={`${company.name} — início`}>
-      {company.logo ? (
-        <Image src={company.logo.src} alt={company.name} width={company.logo.width} height={company.logo.height} priority={!light} />
+    <a
+      href="/#inicio"
+      className={`${s.logo} ${light ? s.logoFooter : ""}`}
+      aria-label={`${company.name} — início`}
+    >
+      {file ? (
+        <Image src={file.src} alt={company.name} width={file.width} height={file.height} priority={!light} />
       ) : (
-        <>
-          <span className={s.logoMark}>{company.shortName}</span>
-          <span className={s.logoSub}>Cosméticos</span>
-        </>
+        <span className={s.logoText}>{company.shortName.toUpperCase()}</span>
       )}
     </a>
   );

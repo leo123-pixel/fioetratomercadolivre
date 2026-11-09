@@ -5,7 +5,7 @@ import s from "./site.module.css";
 
 export function DifferentialsSection() {
   return (
-    <section id={SECTION_IDS.diferenciais} className={s.sectionSand} aria-labelledby="diferenciais-title">
+    <section id={SECTION_IDS.diferenciais} className={s.section} aria-labelledby="diferenciais-title">
       <div className={s.container}>
         <div className={s.sectionHead}>
           <p className={s.eyebrow}>{differentials.eyebrow}</p>

@@ -1,24 +1,17 @@
 import type { Metadata, Viewport } from "next";
-import { Cormorant_Garamond, Manrope } from "next/font/google";
+import { Montserrat } from "next/font/google";
 import { InstitutionalFooter } from "@/components/institucional/InstitutionalFooter";
 import { InstitutionalHeader } from "@/components/institucional/InstitutionalHeader";
 import s from "@/components/institucional/site.module.css";
 import { company, seo } from "@/content/lopes";
 import "./site-globals.css";
 
-const display = Cormorant_Garamond({
+// Tipografia geométrica sem serifa, como no catálogo oficial da Lopes.
+const font = Montserrat({
   subsets: ["latin"],
-  weight: ["500", "600"],
-  style: ["normal", "italic"],
+  weight: ["300", "400", "500", "600"],
   display: "swap",
-  variable: "--font-lopes-display",
-});
-
-const body = Manrope({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  display: "swap",
-  variable: "--font-lopes-body",
+  variable: "--font-lopes",
 });
 
 export const metadata: Metadata = {
@@ -38,14 +31,14 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#fbf8f4",
+  themeColor: "#053839",
   colorScheme: "light",
 };
 
 /** Site institucional público (sem autenticação). Separado da área administrativa e do portal B2B. */
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className={`${display.variable} ${body.variable} ${s.site}`}>
+    <div className={`${font.variable} ${s.site}`}>
       <a href="#conteudo" className={s.skipLink}>
         Pular para o conteúdo
       </a>

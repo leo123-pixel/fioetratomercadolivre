@@ -6,6 +6,7 @@ import { BusinessSegmentsSection } from "@/components/institucional/BusinessSegm
 import { ContactSection } from "@/components/institucional/ContactSection";
 import { DifferentialsSection } from "@/components/institucional/DifferentialsSection";
 import { HeroSection } from "@/components/institucional/HeroSection";
+import { IdentitySection } from "@/components/institucional/IdentitySection";
 import { organizationJsonLd } from "@/lib/site/structured-data";
 
 export const metadata: Metadata = {
@@ -26,6 +27,7 @@ export default function HomePage() {
       />
       <HeroSection />
       <AboutSection />
+      <IdentitySection />
       <DifferentialsSection />
       <BrandsSection />
       <BusinessSegmentsSection />

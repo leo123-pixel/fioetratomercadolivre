@@ -19,7 +19,7 @@ export function B2BPortalCTA() {
         </h2>
         <p className={s.ctaText}>{portalCta.text}</p>
         <div className={s.ctaActions}>
-          <PortalLink className={`${s.btnLight} ${s.btnCaps}`} label={portalCta.button} />
+          <PortalLink className={`${s.btnGold} ${s.btnCaps}`} label={portalCta.button} />
         </div>
         <p className={s.ctaNote}>{portalCta.note}</p>
         {!configured && process.env.NODE_ENV !== "production" && (
