@@ -1,30 +1,28 @@
-import type { Metadata } from "next";
-import "./globals.css";
+import type { Metadata, Viewport } from "next";
+import { siteUrl } from "@/lib/site/links";
 
+/**
+ * Layout raiz compartilhado por três contextos separados:
+ *  - (site)  → site institucional público da Lopes Cosméticos (rota "/")
+ *  - (admin) → integrador ADS ↔ Mercado Livre, protegido por sessão (rotas e URLs inalteradas)
+ *  - api/    → endpoints, webhooks e OAuth (inalterados)
+ * Cada grupo carrega o próprio CSS e cabeçalho. Por padrão nada é indexado; o site libera a indexação
+ * apenas nas suas páginas públicas.
+ */
 export const metadata: Metadata = {
-  title: "Fio & Trato · Integrador ADS ↔ Mercado Livre",
+  metadataBase: new URL(siteUrl()),
   robots: { index: false, follow: false },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="pt-BR">
-      <body>
-        <header className="topbar">
-          <span className="brand">Fio &amp; Trato</span>
-          <span className="brand-sub">Integrador ADS ↔ Mercado Livre</span>
-          <nav className="nav" aria-label="Principal">
-            <a href="/produtos">Produtos</a>
-            <a href="/anuncios">Anúncios</a>
-            <a href="/pedidos">Pedidos</a>
-            <a href="/importacoes">Importações</a>
-            <a href="/configuracoes/tabelas-de-preco">Tabelas de preço</a>
-            <a href="/configuracoes/integracoes/mercadolivre">Mercado Livre</a>
-            <a href="/configuracoes/integracoes/mercadolivre/monitoramento">Monitoramento</a>
-          </nav>
-        </header>
-        <main className="container">{children}</main>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { DRAFT_STATUS_LABEL, listingStatusLabel } from "@/lib/format";
-import { useAutoListingSync } from "@/app/useAutoListingSync";
+import { useAutoListingSync } from "@/app/(admin)/useAutoListingSync";
 
 /** Resumo do anúncio do produto e acesso ao editor completo (/anuncios/preparar/[id]). */
 export function ListingCard(props: {

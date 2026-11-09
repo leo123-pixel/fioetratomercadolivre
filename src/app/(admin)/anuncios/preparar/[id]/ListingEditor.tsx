@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
-import { useAutoListingSync } from "@/app/useAutoListingSync";
+import { useAutoListingSync } from "@/app/(admin)/useAutoListingSync";
 import { draftDisplayStatus, formatDateTime, formatMoney, formatNumber, formatPercent, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
 
 // ---------------------------------------------------------------------------- tipos

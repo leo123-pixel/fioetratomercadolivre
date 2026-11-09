@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { draftDisplayStatus, formatDateTime, formatMoney, listingStatusLabel, PUBLICATION_JOB_LABEL } from "@/lib/format";
-import { useAutoListingSync } from "@/app/useAutoListingSync";
+import { useAutoListingSync } from "@/app/(admin)/useAutoListingSync";
 
 interface Row {
   id: number;

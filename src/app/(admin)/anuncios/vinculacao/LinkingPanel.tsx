@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useState } from "react";
-import { ProductPicker, type PickedProduct } from "@/app/pedidos/ProductPicker";
+import { ProductPicker, type PickedProduct } from "@/app/(admin)/pedidos/ProductPicker";
 import { api, errorText } from "@/lib/client-api";
 import { formatDateTime, formatNumber, listingStatusLabel } from "@/lib/format";
 

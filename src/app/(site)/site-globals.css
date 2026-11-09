@@ -1,0 +1,17 @@
+/* Base mínima do site institucional (carregada só nas rotas públicas do grupo (site)). */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: 80px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+body {
+  margin: 0;
+  background: #fbf8f4;
+}
+main:focus {
+  outline: none;
+}

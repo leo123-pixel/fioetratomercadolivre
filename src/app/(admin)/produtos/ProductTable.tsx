@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, errorText } from "@/lib/client-api";
 import { DRAFT_STATUS_LABEL, formatMoney, listingStatusLabel, stockLabel } from "@/lib/format";
-import { useAutoListingSync } from "@/app/useAutoListingSync";
+import { useAutoListingSync } from "@/app/(admin)/useAutoListingSync";
 
 export interface ProductRowView {
   id: number;
