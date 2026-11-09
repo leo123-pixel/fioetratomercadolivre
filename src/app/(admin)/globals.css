@@ -248,3 +248,6 @@ table.data a:hover { text-decoration: underline; }
 details.raw summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
 details.raw pre { max-height: 320px; overflow: auto; background: var(--bg); padding: 10px; border-radius: 8px; font-size: 0.8rem; }
 .empty-state { text-align: center; padding: 32px 16px; color: var(--muted); }
+
+/* Botão "Sair" na barra superior (visível em todas as telas com sessão ativa). */
+.topbar-logout { min-height: 0; padding: 5px 12px; margin-left: 8px; font-size: 0.85rem; }

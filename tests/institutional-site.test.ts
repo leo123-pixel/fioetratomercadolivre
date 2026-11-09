@@ -31,7 +31,7 @@ describe("site institucional: portal B2B", () => {
 
   it("sem NEXT_PUBLIC_B2B_PORTAL_URL, usa o portal informado pela Lopes", () => {
     vi.stubEnv("NEXT_PUBLIC_B2B_PORTAL_URL", "");
-    expect(DEFAULT_B2B_PORTAL_URL).toBe("https://pedidos.tecdisa.com.br/00203406000171/catalogo");
+    expect(DEFAULT_B2B_PORTAL_URL).toBe("https://pedidos.tecdisa.com.br/Identity/Account/Login?key=00203406000171");
     expect(portalHref()).toEqual({ href: DEFAULT_B2B_PORTAL_URL, external: true });
   });
 

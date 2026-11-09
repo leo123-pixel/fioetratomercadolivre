@@ -89,7 +89,7 @@ export function parsePortalUrl(raw: string | undefined | null): string | null {
  * Portal de pedidos B2B existente da Lopes (Tecdisa), informado pela empresa em 2026-11-09.
  * NEXT_PUBLIC_B2B_PORTAL_URL, se definida, tem prioridade.
  */
-export const DEFAULT_B2B_PORTAL_URL = "https://pedidos.tecdisa.com.br/00203406000171/catalogo";
+export const DEFAULT_B2B_PORTAL_URL = "https://pedidos.tecdisa.com.br/Identity/Account/Login?key=00203406000171";
 
 /** URL do portal de pedidos B2B (variável de ambiente ou endereço padrão), ou null se inválida. */
 export function b2bPortalUrl(): string | null {
