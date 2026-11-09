@@ -7,6 +7,7 @@ import { ContactSection } from "@/components/institucional/ContactSection";
 import { DifferentialsSection } from "@/components/institucional/DifferentialsSection";
 import { HeroSection } from "@/components/institucional/HeroSection";
 import { IdentitySection } from "@/components/institucional/IdentitySection";
+import { NumbersSection } from "@/components/institucional/NumbersSection";
 import { organizationJsonLd } from "@/lib/site/structured-data";
 
 export const metadata: Metadata = {
@@ -26,13 +27,14 @@ export default function HomePage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd()).replace(/</g, "\\u003c") }}
       />
       <HeroSection />
-      <AboutSection />
-      <IdentitySection />
-      <DifferentialsSection />
       <BrandsSection />
+      <AboutSection />
+      <DifferentialsSection />
       <BusinessSegmentsSection />
-      <B2BPortalCTA />
+      <NumbersSection />
+      <IdentitySection />
       <ContactSection />
+      <B2BPortalCTA />
     </>
   );
 }

@@ -4,6 +4,7 @@ import sitemap from "@/app/sitemap";
 import { company, contact } from "@/content/lopes";
 import {
   ADMIN_LOGIN_HREF,
+  DEFAULT_B2B_PORTAL_URL,
   parsePortalUrl,
   portalHref,
   PRIVATE_PATHS,
@@ -28,9 +29,15 @@ describe("site institucional: portal B2B", () => {
     expect(parsePortalUrl(undefined)).toBeNull();
   });
 
-  it("sem NEXT_PUBLIC_B2B_PORTAL_URL, os botões levam ao contato (sem URL inventada)", () => {
+  it("sem NEXT_PUBLIC_B2B_PORTAL_URL, usa o portal informado pela Lopes", () => {
     vi.stubEnv("NEXT_PUBLIC_B2B_PORTAL_URL", "");
-    expect(portalHref()).toEqual({ href: "/#contato", external: false });
+    expect(DEFAULT_B2B_PORTAL_URL).toBe("https://pedidos.tecdisa.com.br/00203406000171/catalogo");
+    expect(portalHref()).toEqual({ href: DEFAULT_B2B_PORTAL_URL, external: true });
+  });
+
+  it("variável inválida não derruba o link: cai no portal padrão", () => {
+    vi.stubEnv("NEXT_PUBLIC_B2B_PORTAL_URL", "http://inseguro.exemplo.com");
+    expect(portalHref().href).toBe(DEFAULT_B2B_PORTAL_URL);
   });
 
   it("com a variável configurada, abre o portal existente por link direto", () => {

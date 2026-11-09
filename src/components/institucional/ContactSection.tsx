@@ -1,7 +1,7 @@
 import { company, contact, contactSection } from "@/content/lopes";
-import { b2bPortalUrl, SECTION_IDS, telHref, whatsappHref } from "@/lib/site/links";
+import { portalHref, SECTION_IDS, telHref, whatsappHref } from "@/lib/site/links";
 import { Icon } from "./icons";
-import { PortalLink } from "./PortalLink";
+import { RevealText } from "./RevealText";
 import s from "./site.module.css";
 
 const SOCIAL_LABELS = { instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn" } as const;
@@ -15,108 +15,98 @@ export function socialLinks() {
   });
 }
 
+function handleFromUrl(url: string): string {
+  const path = new URL(url).pathname.replace(/\/+$/, "").split("/").pop();
+  return path ? `@${path}` : url;
+}
+
+interface ContactItem {
+  key: string;
+  label: string;
+  icon: string;
+  value: string;
+  detail?: string;
+  href?: string;
+  external?: boolean;
+}
+
 export function ContactSection() {
   const whatsapp = whatsappHref(contact.whatsapp, contact.whatsappMessage);
   const phone = telHref(contact.phone);
-  const socials = socialLinks();
-  const hasChannels = Boolean(phone || contact.email || contact.hours || whatsapp);
+  const portal = portalHref();
+
+  const items: ContactItem[] = [];
+  if (whatsapp && contact.whatsapp)
+    items.push({ key: "whatsapp", label: "WhatsApp", icon: "whatsapp", value: contact.whatsapp, href: whatsapp, external: true });
+  if (phone && contact.phone)
+    items.push({ key: "phone", label: "Telefone", icon: "phone", value: contact.phone, detail: contact.hours ?? undefined, href: phone });
+  if (contact.email) items.push({ key: "email", label: "E-mail", icon: "mail", value: contact.email, href: `mailto:${contact.email}` });
+  for (const social of socialLinks())
+    items.push({ key: social.key, label: social.label, icon: social.key, value: handleFromUrl(social.href), href: social.href, external: true });
+  items.push({
+    key: "portal",
+    label: "Portal de pedidos",
+    icon: "orders",
+    value: "Acessar o portal",
+    detail: "Exclusivo para clientes com CNPJ",
+    href: portal.href,
+    external: portal.external,
+  });
+  items.push({
+    key: "location",
+    label: "Localização",
+    icon: "pin",
+    value: `${company.city} — ${company.stateCode}`,
+    detail: contact.address ?? company.state,
+  });
 
   return (
-    <section id={SECTION_IDS.contato} className={s.sectionBeige} aria-labelledby="contato-title">
+    <section id={SECTION_IDS.contato} className={s.section} aria-labelledby="contato-title">
       <div className={s.container}>
-        <div className={s.sectionHead}>
-          <p className={s.eyebrow}>{contactSection.eyebrow}</p>
-          <h2 id="contato-title" className={s.h2}>
-            {contactSection.title}
-          </h2>
-          <p className={s.lead}>{contactSection.intro}</p>
-        </div>
-
-        <div className={s.contactGrid}>
-          <address className={s.contactCard} style={{ fontStyle: "normal" }}>
-            <h3 className={s.contactCardTitle}>
-              <Icon name="pin" size={18} />
-              Localização
-            </h3>
-            <p className={s.contactValue}>
-              {company.city} — {company.stateCode}
-            </p>
-            <p className={s.contactDetail}>{contact.address ?? company.state}</p>
-          </address>
-
-          {hasChannels && (
-            <div className={s.contactCard}>
-              <h3 className={s.contactCardTitle}>
-                <Icon name="phone" size={18} />
-                Atendimento comercial
-              </h3>
-              <ul className={s.contactList}>
-                {whatsapp && contact.whatsapp && (
-                  <li>
-                    <a href={whatsapp} rel="noopener">
-                      <Icon name="whatsapp" size={18} />
-                      WhatsApp {contact.whatsapp}
-                    </a>
-                  </li>
+        <span className={s.label}>{contactSection.label}</span>
+        <h2 id="contato-title" className={s.h2}>
+          <RevealText text={contactSection.title} />
+        </h2>
+        <p className={s.lead} style={{ marginTop: 18 }}>
+          {contactSection.intro}
+        </p>
+      </div>
+      <div className={s.contactGrid}>
+        {items.map((item) => {
+          const body = (
+            <>
+              <span className={s.contactCardTop}>
+                <span className={s.mono}>{item.label}</span>
+                <Icon name={item.href ? "arrowUpRight" : item.icon} size={18} />
+              </span>
+              <span>
+                <span className={s.contactValue} style={{ display: "block" }}>
+                  {item.value}
+                </span>
+                {item.detail && (
+                  <span className={s.contactDetail} style={{ display: "block" }}>
+                    {item.detail}
+                  </span>
                 )}
-                {phone && (
-                  <li>
-                    <a href={phone}>
-                      <Icon name="phone" size={18} />
-                      {contact.phone}
-                    </a>
-                  </li>
-                )}
-                {contact.email && (
-                  <li>
-                    <a href={`mailto:${contact.email}`}>
-                      <Icon name="mail" size={18} />
-                      {contact.email}
-                    </a>
-                  </li>
-                )}
-                {contact.hours && (
-                  <li className={s.contactDetail} style={{ display: "flex", gap: 10, margin: 0 }}>
-                    <Icon name="clock" size={18} />
-                    {contact.hours}
-                  </li>
-                )}
-              </ul>
-            </div>
-          )}
-
-          {socials.length > 0 && (
-            <div className={s.contactCard}>
-              <h3 className={s.contactCardTitle}>
-                <Icon name="instagram" size={18} />
-                Redes sociais
-              </h3>
-              <ul className={s.contactList}>
-                {socials.map((social) => (
-                  <li key={social.key}>
-                    <a href={social.href} rel="noopener" target="_blank">
-                      <Icon name={social.key} size={18} />
-                      {social.label}
-                      <span className={s.srOnly}> (abre em nova aba)</span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-              <p className={s.contactDetail}>Acompanhe novidades do portfólio e lançamentos das marcas.</p>
-            </div>
-          )}
-        </div>
-
-        <div className={s.contactActions}>
-          {whatsapp && (
-            <a href={whatsapp} className={s.btnPrimary} rel="noopener">
-              <Icon name="whatsapp" size={18} />
-              Falar pelo WhatsApp
+              </span>
+            </>
+          );
+          return item.href ? (
+            <a
+              key={item.key}
+              href={item.href}
+              className={s.contactCard}
+              {...(item.external ? { rel: "noopener", target: item.key === "portal" ? undefined : "_blank" } : {})}
+            >
+              {body}
+              {item.external && item.key !== "portal" && <span className={s.srOnly}> (abre em nova aba)</span>}
             </a>
-          )}
-          {/* Sem URL do portal, o link apontaria para esta própria seção: só exibe quando configurado. */}
-          {b2bPortalUrl() && <PortalLink className={s.btnOutline} label="Acessar portal de pedidos" />}
-        </div>
+          ) : (
+            <address key={item.key} className={s.contactCard} style={{ fontStyle: "normal" }}>
+              {body}
+            </address>
+          );
+        })}
       </div>
     </section>
   );

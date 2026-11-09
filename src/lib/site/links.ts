@@ -85,9 +85,15 @@ export function parsePortalUrl(raw: string | undefined | null): string | null {
   return null;
 }
 
-/** URL do portal de pedidos B2B existente (NEXT_PUBLIC_B2B_PORTAL_URL), ou null se não configurada. */
+/**
+ * Portal de pedidos B2B existente da Lopes (Tecdisa), informado pela empresa em 2026-11-09.
+ * NEXT_PUBLIC_B2B_PORTAL_URL, se definida, tem prioridade.
+ */
+export const DEFAULT_B2B_PORTAL_URL = "https://pedidos.tecdisa.com.br/00203406000171/catalogo";
+
+/** URL do portal de pedidos B2B (variável de ambiente ou endereço padrão), ou null se inválida. */
 export function b2bPortalUrl(): string | null {
-  return parsePortalUrl(process.env.NEXT_PUBLIC_B2B_PORTAL_URL);
+  return parsePortalUrl(process.env.NEXT_PUBLIC_B2B_PORTAL_URL) ?? parsePortalUrl(DEFAULT_B2B_PORTAL_URL);
 }
 
 /** Destino dos botões do portal: o portal, ou a seção de contato enquanto a URL não estiver configurada. */

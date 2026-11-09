@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ADMIN_LOGIN_HREF, NAV_LINKS } from "@/lib/site/links";
+import { announcement } from "@/content/lopes";
+import { ADMIN_LOGIN_HREF, NAV_LINKS, portalHref } from "@/lib/site/links";
 import { Icon } from "./icons";
 import { Logo } from "./Logo";
 import { PortalLink } from "./PortalLink";
@@ -10,8 +11,10 @@ import s from "./site.module.css";
 export function InstitutionalHeader() {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const headerRef = useRef<HTMLElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const portal = portalHref();
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -29,6 +32,8 @@ export function InstitutionalHeader() {
   useEffect(() => {
     if (!open) return;
     const panel = panelRef.current;
+    const header = headerRef.current;
+    if (panel && header) panel.style.setProperty("--panel-top", `${header.getBoundingClientRect().bottom}px`);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     panel?.querySelector<HTMLElement>("a, button")?.focus();
@@ -53,7 +58,7 @@ export function InstitutionalHeader() {
       }
     };
     const onResize = () => {
-      if (window.matchMedia("(min-width: 1081px)").matches) close();
+      if (window.matchMedia("(min-width: 1041px)").matches) close();
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("resize", onResize);
@@ -68,39 +73,42 @@ export function InstitutionalHeader() {
   // elementos position: fixed e o painel não ocuparia a tela inteira.
   return (
     <>
-    <header className={`${s.header} ${scrolled || open ? s.headerScrolled : ""}`}>
-      <div className={s.headerInner}>
-        <Logo />
+      <a href={portal.href} className={s.announcement} rel={portal.external ? "noopener" : undefined}>
+        <span>{announcement.text}</span> →
+      </a>
+      <header ref={headerRef} className={`${s.header} ${scrolled || open ? s.headerScrolled : ""}`}>
+        <div className={s.headerInner}>
+          <Logo />
 
-        <nav className={s.nav} aria-label="Navegação principal">
-          {NAV_LINKS.map((link) => (
-            <a key={link.href} href={link.href} className={s.navLink}>
-              {link.label}
+          <nav className={s.nav} aria-label="Navegação principal">
+            {NAV_LINKS.map((link) => (
+              <a key={link.href} href={link.href} className={s.navLink}>
+                {link.label}
+              </a>
+            ))}
+          </nav>
+
+          <div className={s.headerActions}>
+            <PortalLink className={`${s.btnPrimary} ${s.btnSmall}`} label="Portal de Pedidos" icon={null} />
+            <a href={ADMIN_LOGIN_HREF} className={s.adminLink} rel="nofollow">
+              <Icon name="lock" size={13} />
+              Área administrativa
             </a>
-          ))}
-        </nav>
+          </div>
 
-        <div className={s.headerActions}>
-          <a href={ADMIN_LOGIN_HREF} className={s.adminLink} rel="nofollow">
-            <Icon name="lock" size={14} />
-            Área administrativa
-          </a>
-          <PortalLink className={`${s.btnPrimary} ${s.btnSmall}`} label="Portal de Pedidos" />
+          <button
+            ref={buttonRef}
+            type="button"
+            className={s.menuButton}
+            aria-expanded={open}
+            aria-controls="menu-mobile"
+            aria-label={open ? "Fechar menu" : "Abrir menu"}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <Icon name={open ? "close" : "menu"} size={22} />
+          </button>
         </div>
-
-        <button
-          ref={buttonRef}
-          type="button"
-          className={s.menuButton}
-          aria-expanded={open}
-          aria-controls="menu-mobile"
-          aria-label={open ? "Fechar menu" : "Abrir menu"}
-          onClick={() => setOpen((value) => !value)}
-        >
-          <Icon name={open ? "close" : "menu"} size={22} />
-        </button>
-      </div>
-    </header>
+      </header>
 
       <div
         id="menu-mobile"
@@ -123,7 +131,7 @@ export function InstitutionalHeader() {
         <div className={s.mobileActions}>
           <PortalLink className={s.btnPrimary} label="Portal de Pedidos" onNavigate={() => close()} />
           <a href={ADMIN_LOGIN_HREF} className={s.adminLink} rel="nofollow">
-            <Icon name="lock" size={14} />
+            <Icon name="lock" size={13} />
             Área administrativa
           </a>
         </div>

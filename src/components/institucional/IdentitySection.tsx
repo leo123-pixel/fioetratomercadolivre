@@ -1,38 +1,44 @@
 import { identity } from "@/content/lopes";
 import { SECTION_IDS } from "@/lib/site/links";
-import { Emphasis } from "./Emphasis";
+import { RevealText } from "./RevealText";
 import s from "./site.module.css";
 
-/** Quem somos: propósito, missão, visão e valores (catálogo oficial). */
+/** Bloco escuro: propósito, missão, visão e valores (catálogo oficial). */
 export function IdentitySection() {
   return (
-    <section id={SECTION_IDS.quemSomos} className={s.sectionDark} aria-labelledby="quem-somos-title">
-      <div className={s.container}>
-        <h2 id="quem-somos-title" className={s.eyebrowLight}>
-          {identity.eyebrow}
-        </h2>
-        <dl className={s.statements}>
-          {identity.statements.map((item) => (
-            <div key={item.label} className={s.statement}>
-              <dt>{item.label}</dt>
-              <dd>{item.text}</dd>
-            </div>
-          ))}
-        </dl>
+    <section id={SECTION_IDS.quemSomos} className={s.dark} aria-labelledby="quem-somos-title">
+      <div className={s.split}>
+        <div>
+          <span className={s.labelLight}>{identity.label}</span>
+          <h2 id="quem-somos-title" className={s.h2}>
+            <RevealText text={identity.titleMuted} className={s.mutedLight} />{" "}
+            <RevealText text={identity.title} offset={3} />
+          </h2>
+        </div>
+        <div className={s.darkText}>
+          <p>{identity.text}</p>
+        </div>
+      </div>
 
-        <h3 className={s.valuesTitle}>{identity.valuesTitle}</h3>
+      <div className={s.statements}>
+        {identity.statements.map((item) => (
+          <div key={item.label} className={s.statement}>
+            <h3 className={s.mono}>{item.label}</h3>
+            <p>{item.text}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className={s.valuesWrap}>
+        <span className={s.labelLight}>{identity.valuesTitle}</span>
         <ul className={s.values}>
           {identity.values.map((value) => (
             <li key={value.title}>
-              <h4 className={s.valueTitle}>{value.title}</h4>
-              <p className={s.valueText}>{value.text}</p>
+              <h4>{value.title}</h4>
+              <p>{value.text}</p>
             </li>
           ))}
         </ul>
-
-        <p className={s.closing}>
-          <Emphasis text={identity.closing} emphasis={identity.closingEmphasis} className={s.highlightLight} />
-        </p>
       </div>
     </section>
   );

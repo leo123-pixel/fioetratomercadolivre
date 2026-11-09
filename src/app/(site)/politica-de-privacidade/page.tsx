@@ -17,7 +17,7 @@ export default function PrivacyPolicyPage() {
   return (
     <article className={s.legal}>
       <div className={s.legalInner}>
-        <p className={s.eyebrow}>Institucional</p>
+        <p className={s.label}>Institucional</p>
         <h1 className={s.legalTitle}>Política de Privacidade</h1>
         <p className={s.legalUpdated}>Última atualização: {UPDATED_AT}</p>
 
