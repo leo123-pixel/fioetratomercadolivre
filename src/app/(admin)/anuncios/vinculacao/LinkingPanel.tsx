@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useState } from "react";
 import { ProductPicker, type PickedProduct } from "@/app/(admin)/pedidos/ProductPicker";
 import { api, errorText } from "@/lib/client-api";
-import { formatDateTime, formatNumber, listingStatusLabel } from "@/lib/format";
+import { formatDateTime, formatMoney, formatNumber, listingStatusLabel } from "@/lib/format";
 
 export interface Row {
   id: string;
@@ -45,7 +45,42 @@ export interface Row {
   productPools: number;
   lastProposalStatus: string | null;
   lastJobStatus: string | null;
+  price: string | null;
+  adsPrice: string | null;
+  adsPriceTable: string | null;
+  adsPriceFetchedAt: string | null;
+  lastPriceStatus: string | null;
+  lastPriceReason: string | null;
 }
+
+/** Situação do estoque (último job ou última proposta) em português. */
+const STOCK_STATE: Record<string, { text: string; tone: Tone }> = {
+  "job:SUCCEEDED": { text: "estoque atualizado", tone: "ok" },
+  "job:QUEUED": { text: "estoque na fila", tone: "info" },
+  "job:RUNNING": { text: "estoque atualizando", tone: "info" },
+  "job:DIVERGED": { text: "estoque não refletido no ML", tone: "danger" },
+  "job:FAILED": { text: "estoque: falhou", tone: "danger" },
+  "job:STALE": { text: "estoque: simular de novo", tone: "warn" },
+  "job:SKIPPED": { text: "estoque: ignorado", tone: "" },
+  "proposal:PROPOSED": { text: "estoque aguardando aprovação", tone: "info" },
+  "proposal:APPROVED": { text: "estoque aprovado", tone: "info" },
+  "proposal:APPLIED": { text: "estoque atualizado", tone: "ok" },
+  "proposal:DIVERGED": { text: "estoque não refletido no ML", tone: "danger" },
+  "proposal:FAILED": { text: "estoque: falhou", tone: "danger" },
+  "proposal:STALE": { text: "estoque: simular de novo", tone: "warn" },
+  "proposal:SUPERSEDED": { text: "estoque: simular de novo", tone: "" },
+  "proposal:SKIPPED": { text: "estoque: ignorado", tone: "" },
+};
+const PRICE_STATE: Record<string, { text: string; tone: Tone }> = {
+  PROPOSED: { text: "preço aguardando aprovação", tone: "info" },
+  IN_SYNC: { text: "preço em dia", tone: "ok" },
+  INELIGIBLE: { text: "preço não elegível", tone: "warn" },
+  APPLYING: { text: "preço atualizando", tone: "info" },
+  APPLIED: { text: "preço atualizado", tone: "ok" },
+  DIVERGED: { text: "preço não refletido no ML", tone: "danger" },
+  FAILED: { text: "preço: falhou", tone: "danger" },
+  STALE: { text: "preço: simular de novo", tone: "warn" },
+};
 
 type Tone = "ok" | "warn" | "danger" | "info" | "";
 export const LINK_LABEL: Record<Row["linkStatus"], { text: string; tone: Tone }> = {
@@ -480,6 +515,8 @@ export function LinkingPanel(props: {
                 <th>Produto ADS</th>
                 <th className="num">Qtd. ADS</th>
                 <th className="num">Diferença</th>
+                <th className="num">Preço ML</th>
+                <th className="num">Preço ADS</th>
                 <th>Vínculo</th>
                 <th>Sincronização</th>
                 <th></th>
@@ -544,6 +581,18 @@ export function LinkingPanel(props: {
                         {isLinked(r) ? (r.adsBranches ? formatNumber(r.adsTotal) : <span className="muted">desconhecido</span>) : "—"}
                       </td>
                       <td className="num">{diff === null ? "—" : diff > 0 ? `+${diff}` : diff}</td>
+                      <td className="num">{r.price ? formatMoney(r.price) : "—"}</td>
+                      <td className="num" title={r.adsPriceFetchedAt ? `Preço ADS (tabela ${r.adsPriceTable}) consultado em ${formatDateTime(r.adsPriceFetchedAt)}` : undefined}>
+                        {!isLinked(r) ? (
+                          "—"
+                        ) : r.adsPrice ? (
+                          <span style={{ fontWeight: 600, color: r.price && Number(r.price) !== Number(r.adsPrice) ? "var(--danger-fg)" : undefined }}>
+                            {formatMoney(r.adsPrice)}
+                          </span>
+                        ) : (
+                          <span className="muted">sem preço</span>
+                        )}
+                      </td>
                       <td>
                         <span className={`chip ${link.tone}`}>{link.text}</span>
                         {(r.mappingSource || r.suggestionSource) && (
@@ -554,13 +603,21 @@ export function LinkingPanel(props: {
                         )}
                       </td>
                       <td>
-                        {r.lastJobStatus ? (
-                          <span className={`chip ${r.lastJobStatus === "SUCCEEDED" ? "ok" : r.lastJobStatus === "QUEUED" || r.lastJobStatus === "RUNNING" ? "info" : "warn"}`}>job {r.lastJobStatus}</span>
-                        ) : r.lastProposalStatus ? (
-                          <span className="chip">proposta {r.lastProposalStatus}</span>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
+                        {(() => {
+                          const stock = r.lastJobStatus ? STOCK_STATE[`job:${r.lastJobStatus}`] : r.lastProposalStatus ? STOCK_STATE[`proposal:${r.lastProposalStatus}`] : null;
+                          const price = r.lastPriceStatus ? PRICE_STATE[r.lastPriceStatus] : null;
+                          if (!stock && !price) return <span className="muted">—</span>;
+                          return (
+                            <>
+                              {stock && <span className={`chip ${stock.tone}`} style={{ display: "inline-block", marginBottom: 4 }}>{stock.text}</span>}
+                              {price && (
+                                <span className={`chip ${price.tone}`} style={{ display: "inline-block" }} title={r.lastPriceReason ?? undefined}>
+                                  {price.text}
+                                </span>
+                              )}
+                            </>
+                          );
+                        })()}
                       </td>
                       <td>
                         <button type="button" className="btn btn-secondary btn-sm" onClick={() => setOpen(open === r.id ? null : r.id)}>
@@ -570,7 +627,7 @@ export function LinkingPanel(props: {
                     </tr>
                     {open === r.id && (
                       <tr>
-                        <td colSpan={12}>
+                        <td colSpan={14}>
                           <Detail
                             row={r}
                             onDone={(msg) => {

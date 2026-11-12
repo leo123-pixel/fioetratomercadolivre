@@ -291,7 +291,7 @@ export async function discoverLegacyListings(sql: Sql, opts: { deadline?: number
 
 export type LinkStatus = "LINKED" | "CONFIRMED" | "PENDING" | "AMBIGUOUS" | "UNLINKED";
 
-export const LEGACY_FILTERS = ["all", "unmapped", "pending", "ambiguous", "linked", "divergent", "ads_zero", "ads_unknown", "multi", "unmanageable", "awaiting"] as const;
+export const LEGACY_FILTERS = ["all", "unmapped", "pending", "ambiguous", "linked", "divergent", "price_divergent", "ads_zero", "ads_unknown", "multi", "unmanageable", "awaiting"] as const;
 export type LegacyFilter = (typeof LEGACY_FILTERS)[number];
 
 /** Chave do estoque controlado no ML: anúncios do mesmo User Product compartilham o estoque. */
@@ -327,8 +327,18 @@ WITH base AS (
          (SELECT count(*) FROM marketplace_mapping_components c WHERE c.mapping_id = b.mapping_id)::int AS component_count,
          COALESCE(ppp.n, 0) AS product_pools,
          lp.status AS last_proposal_status, lp.proposed_quantity AS last_proposed_quantity, lp.created_at AS last_proposal_at,
-         lj.status AS last_job_status, lj.completed_at AS last_job_at
+         lj.status AS last_job_status, lj.completed_at AS last_job_at,
+         pr.price AS ads_price, pr.price_table_code AS ads_price_table, pr.fetched_at AS ads_price_fetched_at,
+         lpp.status AS last_price_status, lpp.reason AS last_price_reason, lpp.created_at AS last_price_at
   FROM base b
+  CROSS JOIN LATERAL (SELECT COALESCE(NULLIF(trim(value->>'priceTableCode'), ''), 'M') AS code, NULLIF(trim(value->>'branchId'), '') AS branch
+                      FROM (SELECT (SELECT value FROM app_settings WHERE key = 'price_sync_settings') AS value) s) pcfg
+  LEFT JOIN LATERAL (SELECT pp.price, pp.price_table_code, pp.fetched_at FROM product_prices pp
+                     WHERE pp.product_id = b.link_product_id AND pp.price_table_code = pcfg.code AND NOT pp.inactive AND pp.price IS NOT NULL
+                       AND (pcfg.branch IS NULL OR pp.branch_id = pcfg.branch)
+                     ORDER BY pp.branch_id LIMIT 1) pr ON true
+  LEFT JOIN LATERAL (SELECT status, reason, created_at FROM price_sync_proposals p
+                     WHERE p.marketplace_item_id = b.marketplace_item_id ORDER BY created_at DESC, id DESC LIMIT 1) lpp ON true
   LEFT JOIN products pl ON pl.id = b.link_product_id
   LEFT JOIN pools_per_product ppp ON ppp.link_product_id = b.link_product_id
   LEFT JOIN products ps ON ps.id = b.suggested_product_id
@@ -345,6 +355,7 @@ const FILTER_SQL: Record<LegacyFilter, string> = {
   ambiguous: "link_status = 'AMBIGUOUS'",
   linked: "link_status IN ('LINKED', 'CONFIRMED')",
   divergent: "link_status IN ('LINKED', 'CONFIRMED') AND ads_branches > 0 AND available_quantity IS NOT NULL AND GREATEST(floor(ads_total), 0) <> available_quantity",
+  price_divergent: "link_status IN ('LINKED', 'CONFIRMED') AND ads_price IS NOT NULL AND price IS NOT NULL AND ads_price <> price",
   ads_zero: "link_status IN ('LINKED', 'CONFIRMED') AND ads_branches > 0 AND ads_total <= 0",
   ads_unknown: "link_status IN ('LINKED', 'CONFIRMED') AND COALESCE(ads_branches, 0) = 0",
   multi: "link_status IN ('LINKED', 'CONFIRMED') AND product_pools > 1",
@@ -399,6 +410,15 @@ export interface LegacyListingRow {
   lastJobStatus: string | null;
   lastJobAt: Date | null;
   lastSeenAt: Date;
+  /** Preço no ML na última leitura da conta. */
+  price: string | null;
+  /** Preço ADS em cache na tabela configurada para o ML (atualizado na simulação de preço). */
+  adsPrice: string | null;
+  adsPriceTable: string | null;
+  adsPriceFetchedAt: Date | null;
+  lastPriceStatus: string | null;
+  lastPriceReason: string | null;
+  lastPriceAt: Date | null;
 }
 
 const SELECT_COLUMNS = `id::text AS id, marketplace_item_id AS "marketplaceItemId", variation_id AS "variationId", variation_label AS "variationLabel",
@@ -411,7 +431,9 @@ const SELECT_COLUMNS = `id::text AS id, marketplace_item_id AS "marketplaceItemI
   suggestion_source AS "suggestionSource", suggestion_confidence AS "suggestionConfidence", candidate_count AS "candidateCount",
   suggestion_details AS "suggestionDetails", ads_total::text AS "adsTotal", ads_branches AS "adsBranches", ads_fetched_at AS "adsFetchedAt",
   manageable, product_pools AS "productPools", last_proposal_status AS "lastProposalStatus", last_proposed_quantity AS "lastProposedQuantity",
-  last_proposal_at AS "lastProposalAt", last_job_status AS "lastJobStatus", last_job_at AS "lastJobAt", last_seen_at AS "lastSeenAt"`;
+  last_proposal_at AS "lastProposalAt", last_job_status AS "lastJobStatus", last_job_at AS "lastJobAt", last_seen_at AS "lastSeenAt",
+  price::text AS price, ads_price::text AS "adsPrice", ads_price_table AS "adsPriceTable", ads_price_fetched_at AS "adsPriceFetchedAt",
+  last_price_status AS "lastPriceStatus", last_price_reason AS "lastPriceReason", last_price_at AS "lastPriceAt"`;
 
 export async function listLegacyListings(
   sql: Sql,
