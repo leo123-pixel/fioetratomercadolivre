@@ -8,7 +8,7 @@ import type { Sql } from "../sql";
  *   1. variável de ambiente STOCK_AUTO_SYNC_ENABLED=true (decisão de implantação);
  *   2. homologação registrada (pelo menos uma atualização manual verificada com sucesso);
  *   3. ativação explícita pelo administrador nas configurações.
- * E mesmo assim só atua sobre produtos (grupos) aprovados individualmente.
+ * O alcance é definido em autoSyncScope: todos os anúncios vinculados (padrão) ou só produtos aprovados um a um.
  */
 export class StockSyncError extends Error {
   constructor(
@@ -22,11 +22,15 @@ export class StockSyncError extends Error {
   }
 }
 
+export type AutoSyncScope = "ALL_LINKED" | "APPROVED_GROUPS";
+
 export interface StockSyncSettings {
   /** Ativação administrativa da automação (padrão: desligada). */
   autoSyncEnabled: boolean;
   /** Intervalo da automação, em minutos. */
   autoSyncIntervalMin: number;
+  /** ALL_LINKED = todo anúncio vinculado e elegível; APPROVED_GROUPS = só produtos marcados como aprovados. */
+  autoSyncScope: AutoSyncScope;
   /** Idade máxima do saldo ADS para permitir AUMENTO do estoque anunciado. */
   maxStockAgeMinutes: number;
   /** Reserva de segurança padrão por produto (unidades). */
@@ -50,7 +54,8 @@ export interface StockSyncSettings {
 
 export const DEFAULT_SETTINGS: StockSyncSettings = {
   autoSyncEnabled: false,
-  autoSyncIntervalMin: 60,
+  autoSyncIntervalMin: 30,
+  autoSyncScope: "ALL_LINKED",
   maxStockAgeMinutes: 15,
   defaultSafetyReserve: 0,
   branchIds: null,
@@ -89,6 +94,7 @@ export function autoSyncState(s: StockSyncSettings): { active: boolean; reason: 
 export interface SettingsPatch {
   autoSyncEnabled?: boolean;
   autoSyncIntervalMin?: number;
+  autoSyncScope?: AutoSyncScope;
   maxStockAgeMinutes?: number;
   defaultSafetyReserve?: number;
   branchIds?: string[] | null;
@@ -117,6 +123,7 @@ export async function updateStockSettings(sql: Sql, patch: SettingsPatch, actor:
   for (const k of ["autoSyncIntervalMin", "maxStockAgeMinutes", "defaultSafetyReserve", "pendingOrderWindowDays", "maxJobsPerRun"] as const) {
     if (patch[k] !== undefined) next[k] = patch[k]!;
   }
+  if (patch.autoSyncScope !== undefined) next.autoSyncScope = patch.autoSyncScope;
   if (patch.branchIds !== undefined) next.branchIds = patch.branchIds && patch.branchIds.length ? [...new Set(patch.branchIds)] : null;
   if (patch.stockSourceConfirmed !== undefined) {
     next.stockSourceConfirmed = patch.stockSourceConfirmed;

@@ -21,6 +21,7 @@ const body = z
   .object({
     autoSyncEnabled: z.boolean().optional(),
     autoSyncIntervalMin: z.number().int().min(15).max(1440).optional(),
+    autoSyncScope: z.enum(["ALL_LINKED", "APPROVED_GROUPS"]).optional(),
     maxStockAgeMinutes: z.number().int().min(1).max(240).optional(),
     defaultSafetyReserve: z.number().int().min(0).max(100_000).optional(),
     branchIds: z.array(z.string().trim().min(1).max(20)).max(50).nullable().optional(),

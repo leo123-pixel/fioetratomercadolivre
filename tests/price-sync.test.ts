@@ -7,6 +7,8 @@ import {
   getPriceProposals,
   latestPriceRun,
   runPricePreview,
+  runAutoPriceSync,
+  updatePriceSettings,
   buildPriceBody,
   DEFAULT_PRICE_SETTINGS,
   evaluatePrice,
@@ -281,5 +283,44 @@ describe("sincronização de preço (fluxo completo)", () => {
     const r = await applyPriceProposals(t.sql(), { proposalIds: [ps[0].id], actor: ACTOR, allowLargeChanges: false });
     expect(r.results[0].status).toBe("APPLIED");
     expect(s.puts[0].body).toEqual({ variations: [{ id: 111, price: 42 }, { id: 222, price: 42 }] });
+  });
+});
+
+describe("preço automático", () => {
+  it("desligado por padrão; ligado, aplica diferenças (inclusive grandes, se configurado), respeita promoção e o intervalo", async () => {
+    const p1 = await product(9301);
+    const p2 = await product(9302);
+    const p3 = await product(9303);
+    const s = await scenario({
+      mlPrices: { MLB31: 50, MLB32: 50, MLB33: 20 },
+      ads: [adsPrice(9301, "M", 52), adsPrice(9302, "M", 100), adsPrice(9303, "M", 25)],
+      promo: ["MLB33"],
+    });
+    await link("MLB31", p1);
+    await link("MLB32", p2);
+    await link("MLB33", p3);
+    const sql = t.sql();
+    expect(await runAutoPriceSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/STOCK_AUTO_SYNC_ENABLED/) });
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/desativada/) });
+      await updatePriceSettings(sql, { autoSyncEnabled: true, autoApplyLargeChanges: false }, ACTOR);
+      const first = await runAutoPriceSync(sql);
+      expect(first).toMatchObject({ ran: true, evaluated: 3, proposed: 1, applied: 1 });
+      expect(s.puts).toEqual([{ path: "/items/MLB31", body: { price: 52 } }]); // +100% fica para aprovação; promoção nunca
+      // Dentro do intervalo nada é reconsultado.
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/já conferidos/) });
+      await updatePriceSettings(sql, { autoApplyLargeChanges: true }, ACTOR);
+      const second = await runAutoPriceSync(sql, { force: true });
+      expect(second).toMatchObject({ ran: true, applied: 1 });
+      expect(s.puts[1]).toEqual({ path: "/items/MLB32", body: { price: 100 } });
+      const [row] = await sql.query<{ by: string }>(`SELECT applied_by AS by FROM price_sync_proposals WHERE marketplace_item_id = 'MLB32' AND status = 'APPLIED'`);
+      expect(row.by).toBe("system:auto");
+      expect(s.puts.some((p) => p.path === "/items/MLB33")).toBe(false);
+      await updatePriceSettings(sql, { autoSyncEnabled: false }, ACTOR);
+      expect(await runAutoPriceSync(sql, { force: true })).toMatchObject({ ran: false });
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
   });
 });

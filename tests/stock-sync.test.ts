@@ -621,7 +621,7 @@ describe("simulação, confirmação e aplicação", () => {
 });
 
 describe("sincronização automática", () => {
-  it("30. desativada por padrão; exige ambiente, homologação e ativação; só atua em grupos aprovados", async () => {
+  it("30. desativada por padrão; exige ambiente, homologação e ativação; alcance: todos os vinculados ou só aprovados", async () => {
     const m = await setup([item("MLB1", { available_quantity: 25 })], [{ produtoId: 100, estoque: 8 }]);
     const p = await product(100);
     await discover();
@@ -641,6 +641,7 @@ describe("sincronização automática", () => {
       expect((await patch({ homologate: true })).status).toBe(200);
       const on = await (await patch({ autoSyncEnabled: true })).json();
       expect(on.autoSync).toEqual({ active: true, reason: null });
+      await patch({ autoSyncScope: "APPROVED_GROUPS" });
       m.state.ads[0].estoque = 3;
       expect(await runAutoStockSync(sql, { force: true })).toMatchObject({ ran: false, reason: expect.stringMatching(/aprovado/) });
       await updateGroupPolicy(sql, p, { autoSyncApproved: true }, ACTOR);
@@ -649,11 +650,18 @@ describe("sincronização automática", () => {
       expect(m.state.items.get("MLB1")!.available_quantity).toBe(3);
       const [job] = await sql.query<{ mode: string; by: string }>(`SELECT sync_mode AS mode, authorized_by AS by FROM stock_sync_jobs ORDER BY created_at DESC LIMIT 1`);
       expect(job).toEqual({ mode: "AUTO", by: "system:auto" });
+      // Padrão: todos os vinculados, sem aprovação por produto; cada estoque é conferido uma vez por intervalo.
+      await updateGroupPolicy(sql, p, { autoSyncApproved: false }, ACTOR);
+      await patch({ autoSyncScope: "ALL_LINKED" });
+      m.state.ads[0].estoque = 2;
+      expect(await runAutoStockSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/já conferidos/) });
+      expect(await runAutoStockSync(sql, { force: true })).toMatchObject({ ran: true, jobs: 1 });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(2);
       // Desativar interrompe a automação imediatamente.
       await patch({ autoSyncEnabled: false });
       m.state.ads[0].estoque = 1;
       expect(await runAutoStockSync(sql, { force: true })).toMatchObject({ ran: false });
-      expect(m.state.items.get("MLB1")!.available_quantity).toBe(3);
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(2);
     } finally {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }

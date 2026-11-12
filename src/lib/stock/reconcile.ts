@@ -1057,26 +1057,40 @@ export interface AutoResult {
   jobs?: number;
 }
 
+/** Estoques conferidos por tick da automação (o tick tem ~45 s e o ML pode exigir leitura anúncio a anúncio). */
+const AUTO_POOLS_PER_TICK = 60;
+
 export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; force?: boolean } = {}): Promise<AutoResult> {
   const settings = await getStockSettings(sql);
   const state = autoSyncState(settings);
   if (!state.active) return { ran: false, reason: state.reason };
-  if (!opts.force) {
-    const [row] = await sql.query<{ due: boolean }>(
-      `SELECT NOT EXISTS (SELECT 1 FROM stock_sync_runs WHERE mode = 'AUTO' AND started_at > now() - make_interval(mins => $1::int)) AS due`,
-      [settings.autoSyncIntervalMin],
-    );
-    if (!row?.due) return { ran: false, reason: "Ainda não é hora da próxima execução" };
-  }
   const owner = randomUUID();
   if (!(await acquireLease(sql, owner, "stock-auto-sync"))) return { ran: false, reason: "Outra execução em andamento" };
   try {
-    const approved = new Set(
-      (await sql.query<{ productId: number }>(`SELECT product_id AS "productId" FROM stock_sync_groups WHERE auto_sync_approved`)).map((r) => r.productId),
-    );
-    if (!approved.size) return { ran: false, reason: "Nenhum grupo de estoque aprovado para automação" };
-    const pools = (await loadPools(sql)).filter((p) => p.components && !p.compositionError && p.components.every((c) => approved.has(c.productId)));
-    if (!pools.length) return { ran: false, reason: "Nenhum anúncio vinculado a grupos aprovados" };
+    let pools = (await loadPools(sql)).filter((p) => p.components && !p.compositionError);
+    if (settings.autoSyncScope === "APPROVED_GROUPS") {
+      const approved = new Set(
+        (await sql.query<{ productId: number }>(`SELECT product_id AS "productId" FROM stock_sync_groups WHERE auto_sync_approved`)).map((r) => r.productId),
+      );
+      if (!approved.size) return { ran: false, reason: "Nenhum grupo de estoque aprovado para automação" };
+      pools = pools.filter((p) => p.components!.every((c) => approved.has(c.productId)));
+    }
+    if (!pools.length) return { ran: false, reason: "Nenhum anúncio vinculado para automatizar" };
+    // Rodízio: cada estoque é conferido no máximo uma vez por intervalo; o que não couber num tick fica para o próximo.
+    if (!opts.force) {
+      const recent = new Set(
+        (
+          await sql.query<{ poolKey: string }>(
+            `SELECT DISTINCT p.pool_key AS "poolKey" FROM stock_sync_proposals p JOIN stock_sync_runs r ON r.id = p.run_id
+             WHERE r.mode = 'AUTO' AND p.created_at > now() - make_interval(mins => $1::int)`,
+            [settings.autoSyncIntervalMin],
+          )
+        ).map((r) => r.poolKey),
+      );
+      pools = pools.filter((p) => !recent.has(p.key));
+      if (!pools.length) return { ran: false, reason: "Todos os estoques já conferidos neste intervalo" };
+    }
+    pools = pools.slice(0, AUTO_POOLS_PER_TICK);
     const preview = await runPreview(sql, { requestedBy: "system:auto", mode: "AUTO", poolKeys: pools.map((p) => p.key), deadline: opts.deadline });
     const eligible = preview.proposals.filter((p) => p.status === "PROPOSED").slice(0, settings.maxJobsPerRun);
     const jobIds: string[] = [];

@@ -6,12 +6,14 @@ import { upsertPrices } from "../imports/upserts";
 import { logger, sanitize } from "../logger";
 import { retrySleep, withReadRetry } from "../marketplace/errors";
 import { MeliHttpError, meliRequest } from "../meli/api";
+import { randomUUID } from "node:crypto";
+import { acquireLease, releaseLease } from "../imports/jobs";
 import type { Sql } from "../sql";
-import { recordHistory } from "./settings";
+import { envAutoSyncAllowed, recordHistory, StockSyncError } from "./settings";
 
 /**
  * Sincronização de PREÇO ADS → Mercado Livre para anúncios legados (criados fora do integrador) já vinculados
- * a um produto da ADS. Fluxo sempre manual:
+ * a um produto da ADS. Manual (simulação + aprovação) ou automática (runAutoPriceSync, quando ativada):
  *
  *   1. Simulação (somente leitura): consulta ao vivo o preço da tabela configurada (padrão "M") na ADS e o preço
  *      atual no ML; grava uma proposta por anúncio.
@@ -33,19 +35,74 @@ export interface PriceSyncSettings {
   branchId: string | null;
   /** Variação (%) a partir da qual a aplicação exige confirmação adicional. */
   maxChangePct: number;
+  /** Atualização automática ligada pelo administrador (padrão: desligada). */
+  autoSyncEnabled: boolean;
+  /** Cada anúncio é conferido no máximo uma vez por intervalo (minutos). */
+  autoSyncIntervalMin: number;
+  /** Na automação, aplica também variações acima de maxChangePct (decisão do administrador). */
+  autoApplyLargeChanges: boolean;
+  updatedBy: string | null;
+  updatedAt: string | null;
 }
 
-export const DEFAULT_PRICE_SETTINGS: PriceSyncSettings = { priceTableCode: "M", branchId: null, maxChangePct: 30 };
+export const DEFAULT_PRICE_SETTINGS: PriceSyncSettings = {
+  priceTableCode: "M",
+  branchId: null,
+  maxChangePct: 30,
+  autoSyncEnabled: false,
+  autoSyncIntervalMin: 30,
+  autoApplyLargeChanges: true,
+  updatedBy: null,
+  updatedAt: null,
+};
 const SETTINGS_KEY = "price_sync_settings";
 
 export async function getPriceSettings(sql: Sql): Promise<PriceSyncSettings> {
   const [row] = await sql.query<{ value: Partial<PriceSyncSettings> }>(`SELECT value FROM app_settings WHERE key = $1::text`, [SETTINGS_KEY]);
   const v = row?.value ?? {};
+  const d = DEFAULT_PRICE_SETTINGS;
   return {
-    priceTableCode: typeof v.priceTableCode === "string" && v.priceTableCode.trim() ? v.priceTableCode.trim() : DEFAULT_PRICE_SETTINGS.priceTableCode,
+    priceTableCode: typeof v.priceTableCode === "string" && v.priceTableCode.trim() ? v.priceTableCode.trim() : d.priceTableCode,
     branchId: typeof v.branchId === "string" && v.branchId.trim() ? v.branchId.trim() : null,
-    maxChangePct: typeof v.maxChangePct === "number" && v.maxChangePct > 0 ? v.maxChangePct : DEFAULT_PRICE_SETTINGS.maxChangePct,
+    maxChangePct: typeof v.maxChangePct === "number" && v.maxChangePct > 0 ? v.maxChangePct : d.maxChangePct,
+    autoSyncEnabled: typeof v.autoSyncEnabled === "boolean" ? v.autoSyncEnabled : d.autoSyncEnabled,
+    autoSyncIntervalMin: typeof v.autoSyncIntervalMin === "number" && v.autoSyncIntervalMin >= 15 ? v.autoSyncIntervalMin : d.autoSyncIntervalMin,
+    autoApplyLargeChanges: typeof v.autoApplyLargeChanges === "boolean" ? v.autoApplyLargeChanges : d.autoApplyLargeChanges,
+    updatedBy: typeof v.updatedBy === "string" ? v.updatedBy : null,
+    updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : null,
   };
+}
+
+export interface PriceSettingsPatch {
+  autoSyncEnabled?: boolean;
+  autoSyncIntervalMin?: number;
+  autoApplyLargeChanges?: boolean;
+}
+
+export async function updatePriceSettings(sql: Sql, patch: PriceSettingsPatch, actor: string): Promise<PriceSyncSettings> {
+  const next = { ...(await getPriceSettings(sql)) };
+  if (patch.autoSyncEnabled && !envAutoSyncAllowed()) {
+    throw new StockSyncError("auto_sync_env_disabled", "A automação está bloqueada no ambiente (STOCK_AUTO_SYNC_ENABLED diferente de true)");
+  }
+  if (patch.autoSyncEnabled !== undefined) next.autoSyncEnabled = patch.autoSyncEnabled;
+  if (patch.autoSyncIntervalMin !== undefined) next.autoSyncIntervalMin = patch.autoSyncIntervalMin;
+  if (patch.autoApplyLargeChanges !== undefined) next.autoApplyLargeChanges = patch.autoApplyLargeChanges;
+  next.updatedBy = actor;
+  next.updatedAt = new Date().toISOString();
+  await sql.execute(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES ($1::text, $2::jsonb, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [SETTINGS_KEY, JSON.stringify(next)],
+  );
+  await recordHistory(sql, { type: "price_settings_changed", actor, details: Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) });
+  return next;
+}
+
+/** A automação de preço pode rodar agora? */
+export function autoPriceState(s: PriceSyncSettings): { active: boolean; reason: string | null } {
+  if (!envAutoSyncAllowed()) return { active: false, reason: "STOCK_AUTO_SYNC_ENABLED não está definida como true no ambiente" };
+  if (!s.autoSyncEnabled) return { active: false, reason: "Automação de preço desativada" };
+  return { active: true, reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -628,4 +685,64 @@ export async function applyPriceProposals(
     }
   }
   return { results, notProcessed };
+}
+
+// ---------------------------------------------------------------------------
+// Automação (chamada pelo tick do agendador)
+// ---------------------------------------------------------------------------
+
+/** Anúncios conferidos por tick (o tick tem ~45 s; a aplicação reconsulta ADS e ML antes de escrever). */
+const AUTO_ITEMS_PER_TICK = 80;
+export const PRICE_AUTO_ACTOR = "system:auto";
+
+export interface AutoPriceResult {
+  ran: boolean;
+  reason: string | null;
+  runId?: string;
+  evaluated?: number;
+  proposed?: number;
+  applied?: number;
+  failed?: number;
+}
+
+/**
+ * Confere os anúncios legados vinculados cujo preço não foi conferido pela automação dentro do intervalo, e aplica
+ * as diferenças elegíveis com as mesmas reconsultas e travas da aplicação manual (promoção, kit, preço ausente…).
+ */
+export async function runAutoPriceSync(sql: Sql, opts: { deadline?: number; force?: boolean } = {}): Promise<AutoPriceResult> {
+  const settings = await getPriceSettings(sql);
+  const state = autoPriceState(settings);
+  if (!state.active) return { ran: false, reason: state.reason };
+  const owner = randomUUID();
+  if (!(await acquireLease(sql, owner, "price-auto-sync"))) return { ran: false, reason: "Outra execução em andamento" };
+  try {
+    let itemIds = [...new Set((await loadLinkedRows(sql)).map((r) => r.itemId))];
+    if (!itemIds.length) return { ran: false, reason: "Nenhum anúncio legado vinculado" };
+    if (!opts.force) {
+      const recent = new Set(
+        (
+          await sql.query<{ itemId: string }>(
+            `SELECT DISTINCT p.marketplace_item_id AS "itemId" FROM price_sync_proposals p JOIN price_sync_runs r ON r.id = p.run_id
+             WHERE r.requested_by = $1::text AND p.created_at > now() - make_interval(mins => $2::int)`,
+            [PRICE_AUTO_ACTOR, settings.autoSyncIntervalMin],
+          )
+        ).map((r) => r.itemId),
+      );
+      itemIds = itemIds.filter((id) => !recent.has(id));
+      if (!itemIds.length) return { ran: false, reason: "Todos os preços já conferidos neste intervalo" };
+    }
+    const preview = await runPricePreview(sql, { requestedBy: PRICE_AUTO_ACTOR, itemIds: itemIds.slice(0, AUTO_ITEMS_PER_TICK), deadline: opts.deadline });
+    const toApply = preview.proposals.filter((p) => p.status === "PROPOSED" && (settings.autoApplyLargeChanges || !p.largeChange)).map((p) => p.id);
+    let applied = 0;
+    let failed = 0;
+    if (toApply.length && timeLeft(opts.deadline) > 10_000) {
+      const r = await applyPriceProposals(sql, { proposalIds: toApply, actor: PRICE_AUTO_ACTOR, allowLargeChanges: settings.autoApplyLargeChanges, deadline: opts.deadline });
+      applied = r.results.filter((x) => x.status === "APPLIED").length;
+      failed = r.results.filter((x) => x.status === "FAILED" || x.status === "DIVERGED").length;
+    }
+    if (failed) logger.warn("Automação de preço: atualizações não confirmadas", { runId: preview.runId, failed });
+    return { ran: true, reason: null, runId: preview.runId, evaluated: preview.summary.items, proposed: toApply.length, applied, failed };
+  } finally {
+    await releaseLease(sql, owner, "price-auto-sync").catch(() => undefined);
+  }
 }

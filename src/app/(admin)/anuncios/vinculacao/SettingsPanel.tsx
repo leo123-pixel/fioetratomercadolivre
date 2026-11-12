@@ -8,6 +8,7 @@ import { formatDateTime } from "@/lib/format";
 interface Settings {
   autoSyncEnabled: boolean;
   autoSyncIntervalMin: number;
+  autoSyncScope: "ALL_LINKED" | "APPROVED_GROUPS";
   maxStockAgeMinutes: number;
   defaultSafetyReserve: number;
   branchIds: string[] | null;
@@ -20,9 +21,16 @@ interface Settings {
   homologatedBy: string | null;
 }
 
-export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: boolean; autoSync: { active: boolean; reason: string | null } }) {
+interface PriceAuto {
+  settings: { autoSyncEnabled: boolean; autoSyncIntervalMin: number; autoApplyLargeChanges: boolean; maxChangePct: number; priceTableCode: string };
+  autoSync: { active: boolean; reason: string | null };
+}
+
+export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: boolean; autoSync: { active: boolean; reason: string | null }; price: PriceAuto }) {
   const router = useRouter();
   const s = props.settings;
+  const ps = props.price.settings;
+  const [priceInterval, setPriceInterval] = useState(String(ps.autoSyncIntervalMin));
   const [form, setForm] = useState({
     defaultSafetyReserve: String(s.defaultSafetyReserve),
     maxStockAgeMinutes: String(s.maxStockAgeMinutes),
@@ -34,9 +42,9 @@ export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: b
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  async function patch(body: Record<string, unknown>, ok: string) {
+  async function patch(body: Record<string, unknown>, ok: string, url = "/api/stock-sync/settings") {
     setBusy(true);
-    const r = await api("/api/stock-sync/settings", { method: "PATCH", body });
+    const r = await api(url, { method: "PATCH", body });
     setBusy(false);
     if (!r.ok) return setFeedback({ kind: "error", text: errorText(r) });
     setFeedback({ kind: "success", text: ok });
@@ -107,12 +115,32 @@ export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: b
         )}
       </label>
 
-      <h3>Sincronização automática</h3>
+      <h3>Estoque automático</h3>
+      <p className="muted">
+        A cada intervalo o sistema lê o saldo da ADS e grava a diferença no Mercado Livre, conferindo depois. Anúncios Full, kits incompletos e anúncios com
+        problema ficam de fora (aparecem na lista com o motivo).
+      </p>
       <ul className="muted">
         <li>Ambiente (STOCK_AUTO_SYNC_ENABLED): {props.envAutoSyncAllowed ? "liberado" : "bloqueado"}</li>
         <li>Homologação: {s.homologatedAt ? `registrada por ${s.homologatedBy} em ${formatDateTime(s.homologatedAt)}` : "não registrada"}</li>
-        <li>Situação: {props.autoSync.active ? "ativa (somente grupos aprovados)" : `desativada — ${props.autoSync.reason}`}</li>
+        <li>
+          Situação:{" "}
+          {props.autoSync.active
+            ? `ativa a cada ${s.autoSyncIntervalMin} min (${s.autoSyncScope === "APPROVED_GROUPS" ? "só produtos aprovados" : "todos os anúncios vinculados"})`
+            : `desativada — ${props.autoSync.reason}`}
+        </li>
       </ul>
+      <label style={{ display: "flex", gap: 8, fontWeight: 400 }}>
+        <input
+          type="checkbox"
+          checked={s.autoSyncScope !== "APPROVED_GROUPS"}
+          disabled={busy}
+          onChange={(e) =>
+            patch({ autoSyncScope: e.target.checked ? "ALL_LINKED" : "APPROVED_GROUPS" }, e.target.checked ? "Automação vale para todos os anúncios vinculados" : "Automação só para produtos aprovados")
+          }
+        />
+        Atualizar todos os anúncios vinculados (desmarcado: só os produtos aprovados um a um)
+      </label>
       <div className="actions">
         {!s.homologatedAt && (
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => patch({ homologate: true }, "Homologação registrada")}>
@@ -126,6 +154,55 @@ export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: b
         ) : (
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !props.envAutoSyncAllowed || !s.homologatedAt || !s.stockSourceConfirmed} onClick={() => patch({ autoSyncEnabled: true }, "Automação ativada")}>
             Ativar automação
+          </button>
+        )}
+      </div>
+
+      <h3>Preço automático (anúncios legados)</h3>
+      <p className="muted">
+        A cada intervalo o sistema compara o preço da tabela {ps.priceTableCode} da ADS com o do Mercado Livre e aplica a diferença, com as mesmas travas da
+        aprovação manual: anúncio em promoção, kit, preço ausente ou zerado ficam de fora.
+      </p>
+      <ul className="muted">
+        <li>Situação: {props.price.autoSync.active ? `ativa a cada ${ps.autoSyncIntervalMin} min` : `desativada — ${props.price.autoSync.reason}`}</li>
+      </ul>
+      <div className="form-grid">
+        <label>
+          Intervalo do preço (min)
+          <input type="text" inputMode="numeric" value={priceInterval} onChange={(e) => setPriceInterval(e.target.value)} />
+          <span className="hint">Mínimo 15.</span>
+        </label>
+      </div>
+      <label style={{ display: "flex", gap: 8, fontWeight: 400 }}>
+        <input
+          type="checkbox"
+          checked={ps.autoApplyLargeChanges}
+          disabled={busy}
+          onChange={(e) => patch({ autoApplyLargeChanges: e.target.checked }, "Configuração de preço salva", "/api/price-sync/settings")}
+        />
+        Aplicar também mudanças acima de {ps.maxChangePct}% (desmarcado: essas ficam esperando o botão Aprovar)
+      </label>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={busy}
+          onClick={() => patch({ autoSyncIntervalMin: Number(priceInterval) }, "Intervalo do preço salvo", "/api/price-sync/settings")}
+        >
+          Salvar intervalo
+        </button>
+        {ps.autoSyncEnabled ? (
+          <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => patch({ autoSyncEnabled: false }, "Preço automático desativado", "/api/price-sync/settings")}>
+            Desativar preço automático
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={busy || !props.envAutoSyncAllowed}
+            onClick={() => patch({ autoSyncEnabled: true, autoSyncIntervalMin: Number(priceInterval) }, "Preço automático ativado", "/api/price-sync/settings")}
+          >
+            Ativar preço automático
           </button>
         )}
       </div>
