@@ -1,6 +1,5 @@
 import "server-only";
-import { meliRequest } from "../meli/api";
-import { withReadRetry } from "../marketplace/errors";
+import { multigetItems } from "../meli/items";
 import { listSellerItemIds, ITEM_ID_RE } from "../publish/listings";
 import type { Sql } from "../sql";
 import { getStore } from "../store";
@@ -210,7 +209,7 @@ export async function fetchItems(ids: string[]): Promise<{ items: MlItem[]; notF
   const notFound: string[] = [];
   for (let i = 0; i < ids.length; i += 20) {
     const chunk = ids.slice(i, i + 20);
-    const { data } = await withReadRetry(() => meliRequest<{ code: number; body: MlItem }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: LEGACY_ITEM_FIELDS } }));
+    const { data } = await multigetItems<{ code: number; body: MlItem }>(chunk, LEGACY_ITEM_FIELDS).then((data) => ({ data }));
     const seen = new Set<string>();
     for (const e of Array.isArray(data) ? data : []) {
       if (e?.code === 200 && e.body?.id && chunk.includes(e.body.id)) {

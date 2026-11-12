@@ -1,7 +1,6 @@
 import "server-only";
-import { meliRequest } from "../meli/api";
+import { multigetItems } from "../meli/items";
 import type { Sql } from "../sql";
-import { withReadRetry } from "./errors";
 import { adsStatusOf, mappingStatusOf } from "./order-status";
 
 /**
@@ -296,9 +295,7 @@ export async function suggestByBarcode(sql: Sql): Promise<BarcodeSuggestion[]> {
   const items = new Map<string, { attributes?: MlAttr[]; variations?: { id?: number | string; attributes?: MlAttr[]; attribute_combinations?: MlAttr[] }[] }>();
   for (let i = 0; i < ids.length; i += 20) {
     const chunk = ids.slice(i, i + 20);
-    const { data } = await withReadRetry(() =>
-      meliRequest<{ code: number; body: { id?: string; attributes?: MlAttr[]; variations?: [] } }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: "id,attributes,variations" } }),
-    );
+    const { data } = await multigetItems<{ code: number; body: { id?: string; attributes?: MlAttr[]; variations?: [] } }>(chunk, "id,attributes,variations").then((data) => ({ data }));
     for (const e of Array.isArray(data) ? data : []) if (e.code === 200 && e.body?.id) items.set(e.body.id, e.body);
   }
   const out: BarcodeSuggestion[] = [];

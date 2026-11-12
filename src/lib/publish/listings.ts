@@ -1,5 +1,6 @@
 import "server-only";
 import { MeliHttpError, meliRequest } from "../meli/api";
+import { multigetItems } from "../meli/items";
 import { classifyError, withReadRetry } from "../marketplace/errors";
 import { MeliAuthError } from "../meli/tokens";
 import { getStore } from "../store";
@@ -389,7 +390,7 @@ export async function syncAllListings(sql: Sql, ctx: SyncContext = {}, opts: Rec
     const chunk = ids.slice(i, i + 20);
     let data: { code: number; body: MeliItemSnapshot }[] = [];
     try {
-      const r = await withReadRetry(() => meliRequest<{ code: number; body: MeliItemSnapshot }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: ITEM_FIELDS } }));
+      const r = await multigetItems<{ code: number; body: MeliItemSnapshot }>(chunk, ITEM_FIELDS).then((data) => ({ data }));
       data = Array.isArray(r.data) ? r.data : [];
     } catch (err) {
       if (err instanceof MeliAuthError || (err instanceof MeliHttpError && (err.kind === "auth" || err.kind === "forbidden"))) throw err;
@@ -511,7 +512,7 @@ async function discoverUnlinkedItems(sql: Sql, deadline?: number): Promise<{ unk
       break;
     }
     const chunk = toFetch.slice(i, i + 20);
-    const { data } = await withReadRetry(() => meliRequest<{ code: number; body: MeliItemSnapshot }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: ITEM_FIELDS } }));
+    const { data } = await multigetItems<{ code: number; body: MeliItemSnapshot }>(chunk, ITEM_FIELDS).then((data) => ({ data }));
     for (const entry of Array.isArray(data) ? data : []) {
       const item = entry.body;
       if (entry.code !== 200 || !item?.id || !chunk.includes(item.id)) continue;

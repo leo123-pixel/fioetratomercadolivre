@@ -1,5 +1,6 @@
 import "server-only";
 import { sanitize } from "../logger";
+import { multigetItems } from "../meli/items";
 import { MeliHttpError, meliRequest } from "../meli/api";
 import { withReadRetry } from "../marketplace/errors";
 import type { MlItem } from "./legacy";
@@ -81,7 +82,7 @@ async function readItems(ids: string[], variationId: string): Promise<RemoteItem
   const out: RemoteItem[] = [];
   for (let i = 0; i < ids.length; i += 20) {
     const chunk = ids.slice(i, i + 20);
-    const { data } = await withReadRetry(() => meliRequest<{ code: number; body: MlItem }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: ITEM_FIELDS } }));
+    const { data } = await multigetItems<{ code: number; body: MlItem }>(chunk, ITEM_FIELDS).then((data) => ({ data }));
     const byId = new Map<string, MlItem>();
     for (const e of Array.isArray(data) ? data : []) if (e?.code === 200 && e.body?.id) byId.set(e.body.id, e.body);
     for (const id of chunk) out.push(toRemote(byId.get(id) ?? null, id, variationId));

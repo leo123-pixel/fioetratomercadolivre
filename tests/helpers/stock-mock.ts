@@ -33,6 +33,8 @@ export interface StockMockState {
   ads: { produtoId: number; filialId: string; estoque: number }[];
   adsFail: boolean;
   tags: string[];
+  /** Simula o desligamento do multiget: GET /items?ids= responde 403 "Resource deprecated". */
+  multigetDeprecated?: boolean;
 }
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
@@ -128,6 +130,9 @@ export function mockStock(init: Partial<StockMockState> = {}) {
       const offset = Number(url.searchParams.get("offset") ?? 0);
       const limit = Number(url.searchParams.get("limit") ?? 50);
       return json({ seller_id: SELLER, results: all.slice(offset, offset + limit), paging: { total: all.length, offset, limit } });
+    }
+    if (method === "GET" && path === "/items" && url.searchParams.get("ids") && state.multigetDeprecated) {
+      return json({ message: "Resource deprecated - client no longer allowed to consume this resource", error: "forbidden", status: 403 }, 403);
     }
     if (method === "GET" && path === "/items" && url.searchParams.get("ids")) {
       const ids = url.searchParams.get("ids")!.split(",");

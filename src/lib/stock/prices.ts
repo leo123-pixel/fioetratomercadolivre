@@ -1,5 +1,6 @@
 import "server-only";
 import { AdsApiError, getAdsClient } from "../ads/client";
+import { multigetItems } from "../meli/items";
 import { mapPrices, type PriceRow } from "../ads/schemas";
 import { upsertPrices } from "../imports/upserts";
 import { logger, sanitize } from "../logger";
@@ -277,7 +278,7 @@ export async function readMlPrices(ids: string[]): Promise<Map<string, MlPriceSt
   const out = new Map<string, MlPriceState>();
   for (let i = 0; i < ids.length; i += 20) {
     const chunk = ids.slice(i, i + 20);
-    const { data } = await withReadRetry(() => meliRequest<{ code: number; body: MlItemPrice }[]>("/items", { auth: true, query: { ids: chunk.join(","), attributes: ITEM_FIELDS } }));
+    const { data } = await multigetItems<{ code: number; body: MlItemPrice }>(chunk, ITEM_FIELDS).then((data) => ({ data }));
     const byId = new Map<string, MlItemPrice>();
     for (const e of Array.isArray(data) ? data : []) if (e?.code === 200 && e.body?.id) byId.set(e.body.id, e.body);
     for (const id of chunk) {

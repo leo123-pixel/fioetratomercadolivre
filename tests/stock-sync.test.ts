@@ -11,6 +11,7 @@ import { POST as validatePost } from "@/app/api/stock-sync/validate/route";
 import { runTick } from "@/lib/marketplace/scheduler";
 import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
+import { resetMultigetFallback } from "@/lib/meli/items";
 import { isValidGtin } from "@/lib/stock/matching";
 import { processStockJobs, runAutoStockSync, runPreview, validateProposals, applyProposals, type ProposalView } from "@/lib/stock/reconcile";
 import { updateGroupPolicy, updateStockSettings } from "@/lib/stock/settings";
@@ -309,6 +310,25 @@ describe("modelos de estoque", () => {
     const prop = (await preview()).proposals[0];
     await approve([prop.id]);
     expect(m.puts()).toEqual([expect.objectContaining({ path: "/items/MLB1", body: { available_quantity: 8 } })]);
+  });
+
+  it("15b. multiget desligado pelo ML (403 Resource deprecated): lê anúncio por anúncio e o fluxo segue", async () => {
+    const m = await setup([item("MLB1", { available_quantity: 25 }), item("MLB2", { available_quantity: 3 })], [{ produtoId: 100, estoque: 8 }]);
+    m.state.multigetDeprecated = true;
+    try {
+      const p = await product(100);
+      await discover();
+      await link("MLB1", p);
+      const prop = byItem((await preview()).proposals, "MLB1");
+      expect(prop).toMatchObject({ marketplaceQuantity: 25, proposedQuantity: 8, eligible: true });
+      const out = await approve([prop.id]);
+      expect(out.jobs[0].status).toBe("SUCCEEDED");
+      expect(m.state.calls.some((c) => c.method === "GET" && c.path.startsWith("/items/MLB1"))).toBe(true);
+      // Depois do primeiro 403, não insiste no multiget.
+      expect(m.state.calls.filter((c) => c.method === "GET" && c.path.startsWith("/items?")).length).toBe(1);
+    } finally {
+      resetMultigetFallback();
+    }
   });
 
   it("16. User Products sem estoque distribuído: anúncios do mesmo UP são um único estoque (uma escrita)", async () => {
