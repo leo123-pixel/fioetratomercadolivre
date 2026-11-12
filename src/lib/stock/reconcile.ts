@@ -560,7 +560,7 @@ export async function runPreview(sql: Sql, opts: PreviewOptions): Promise<Previe
   await sql.execute(`UPDATE stock_sync_runs SET status = $2::text, finished_at = now(), summary = $3::jsonb WHERE id = $1::uuid`, [
     runId,
     status,
-    JSON.stringify({ ...summary, evaluated, pools: selected.length }),
+    JSON.stringify({ ...summary, evaluated, pools: selected.length, ...(opts.itemIds?.length || opts.poolKeys ? { scope: "ITEMS" } : {}) }),
   ]);
   const proposals = await sql.query<ProposalView>(`${PROPOSAL_SELECT} WHERE p.run_id = $1::uuid ORDER BY p.eligible DESC, abs(COALESCE(p.difference, 0)) DESC, p.id`, [runId]);
   return { runId, status, evaluated, pendingPools: selected.length - evaluated, summary, proposals };
@@ -573,7 +573,8 @@ export async function getRunProposals(sql: Sql, runId: string): Promise<Proposal
 export async function latestRun(sql: Sql, mode: "DRY_RUN" | "AUTO" = "DRY_RUN") {
   const [run] = await sql.query<{ id: string; status: string; requestedBy: string; startedAt: Date; finishedAt: Date | null; summary: unknown }>(
     `SELECT id::text AS id, status, requested_by AS "requestedBy", started_at AS "startedAt", finished_at AS "finishedAt", summary
-     FROM stock_sync_runs WHERE mode = $1::text ORDER BY started_at DESC LIMIT 1`,
+     FROM stock_sync_runs WHERE mode = $1::text AND (summary IS NULL OR summary->>'scope' IS DISTINCT FROM 'ITEMS')
+     ORDER BY started_at DESC LIMIT 1`,
     [mode],
   );
   return run ?? null;

@@ -5,6 +5,7 @@ import { confirmLink } from "@/lib/stock/links";
 import {
   applyPriceProposals,
   getPriceProposals,
+  latestPriceRun,
   runPricePreview,
   buildPriceBody,
   DEFAULT_PRICE_SETTINGS,
@@ -244,6 +245,29 @@ describe("sincronização de preço (fluxo completo)", () => {
     const r2 = await applyPriceProposals(t.sql(), { proposalIds: [big.id], actor: ACTOR, allowLargeChanges: true });
     expect(r2.results[0].status).toBe("APPLIED");
     expect(s.puts).toEqual([{ path: "/items/MLB12", body: { price: 100 } }]);
+  });
+
+  it("aprovação por anúncio: simulação restrita não substitui a geral e invalida a proposta antiga do mesmo anúncio", async () => {
+    const p1 = await product(9301);
+    const p2 = await product(9302);
+    const s = await scenario({ mlPrices: { MLB31: 10, MLB32: 20 }, ads: [adsPrice(9301, "M", 11), adsPrice(9302, "M", 21)] });
+    await link("MLB31", p1);
+    await link("MLB32", p2);
+    const full = await runPricePreview(t.sql(), { requestedBy: ACTOR });
+    expect(full.proposals).toEqual([]);
+    const one = await runPricePreview(t.sql(), { requestedBy: ACTOR, itemIds: ["MLB31"] });
+    expect(one.proposals).toHaveLength(1);
+    expect(one.proposals[0]).toMatchObject({ marketplaceItemId: "MLB31", status: "PROPOSED", proposedPrice: "11.00" });
+    expect((await latestPriceRun(t.sql()))!.id).toBe(full.runId);
+
+    const fullProps = await getPriceProposals(t.sql(), full.runId);
+    expect(fullProps.find((p) => p.marketplaceItemId === "MLB31")!.status).toBe("STALE");
+    const other = fullProps.find((p) => p.marketplaceItemId === "MLB32")!;
+    expect(other.status).toBe("PROPOSED");
+
+    const r = await applyPriceProposals(t.sql(), { proposalIds: [one.proposals[0].id, other.id], actor: ACTOR, allowLargeChanges: false });
+    expect(r.results.map((x) => x.status)).toEqual(["APPLIED", "APPLIED"]);
+    expect(s.puts).toHaveLength(2);
   });
 
   it("anúncio com variações recebe o mesmo preço em todas as variações", async () => {

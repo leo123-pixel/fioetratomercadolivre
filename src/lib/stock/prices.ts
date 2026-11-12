@@ -314,7 +314,9 @@ async function promotionActive(itemId: string): Promise<boolean> {
 export interface PricePreviewResult {
   runId: string;
   status: "COMPLETED" | "PARTIAL";
-  summary: { proposed: number; inSync: number; ineligible: number; largeChange: number; items: number };
+  summary: { proposed: number; inSync: number; ineligible: number; largeChange: number; items: number; scope?: "ITEMS" };
+  /** Propostas geradas (somente quando a simulação foi restrita a anúncios específicos). */
+  proposals: PriceProposalView[];
 }
 
 const timeLeft = (deadline?: number) => (deadline === undefined ? Infinity : deadline - Date.now());
@@ -331,7 +333,8 @@ export async function runPricePreview(sql: Sql, opts: { requestedBy: string; ite
     `INSERT INTO price_sync_runs (requested_by, price_table_code, branch_id) VALUES ($1::text, $2::text, $3::text) RETURNING id::text AS id`,
     [opts.requestedBy, settings.priceTableCode, settings.branchId],
   );
-  const summary = { proposed: 0, inSync: 0, ineligible: 0, largeChange: 0, items: 0 };
+  const scoped = !!opts.itemIds?.length;
+  const summary: PricePreviewResult["summary"] = { proposed: 0, inSync: 0, ineligible: 0, largeChange: 0, items: 0, ...(scoped ? { scope: "ITEMS" as const } : {}) };
   let partial = false;
   try {
     const byItem = groupByItem(await loadLinkedRows(sql, opts.itemIds));
@@ -365,7 +368,7 @@ export async function runPricePreview(sql: Sql, opts: { requestedBy: string; ite
     }
     const status = partial ? "PARTIAL" : "COMPLETED";
     await sql.execute(`UPDATE price_sync_runs SET status = $2::text, summary = $3::jsonb, finished_at = now() WHERE id = $1::uuid`, [runId, status, JSON.stringify(summary)]);
-    return { runId, status, summary };
+    return { runId, status, summary, proposals: scoped ? await getPriceProposals(sql, runId) : [] };
   } catch (err) {
     const message = err instanceof Error ? err.message.slice(0, 500) : "Erro desconhecido";
     await sql.execute(`UPDATE price_sync_runs SET status = 'FAILED', error_message = $2::text, summary = $3::jsonb, finished_at = now() WHERE id = $1::uuid`, [runId, message, JSON.stringify(summary)]);
@@ -374,6 +377,12 @@ export async function runPricePreview(sql: Sql, opts: { requestedBy: string; ite
 }
 
 async function insertProposal(sql: Sql, runId: string, settings: PriceSyncSettings, e: PriceEvaluation) {
+  // Propostas abertas anteriores do mesmo anúncio deixam de valer (só a mais recente pode ser aplicada).
+  await sql.execute(
+    `UPDATE price_sync_proposals SET status = 'STALE', error_message = 'Substituída por simulação mais recente', updated_at = now()
+     WHERE marketplace_item_id = $1::text AND status = 'PROPOSED'`,
+    [e.itemId],
+  );
   await sql.execute(
     `INSERT INTO price_sync_proposals (run_id, marketplace_item_id, title, variation_ids, product_ids, ads_product_ids, price_table_code, branch_id,
        ads_price, ads_updated_at, marketplace_status, marketplace_price, proposed_price, difference, change_pct, large_change, eligible, reason_code, reason, status)
@@ -427,7 +436,7 @@ const PROPOSAL_SELECT = `SELECT id::text AS id, run_id::text AS "runId", marketp
 export async function latestPriceRun(sql: Sql) {
   const [run] = await sql.query<{ id: string; status: string; requestedBy: string; priceTableCode: string; startedAt: Date; summary: unknown }>(
     `SELECT id::text AS id, status, requested_by AS "requestedBy", price_table_code AS "priceTableCode", started_at AS "startedAt", summary
-     FROM price_sync_runs ORDER BY started_at DESC LIMIT 1`,
+     FROM price_sync_runs WHERE summary IS NULL OR summary->>'scope' IS DISTINCT FROM 'ITEMS' ORDER BY started_at DESC LIMIT 1`,
   );
   return run ?? null;
 }
@@ -492,7 +501,6 @@ export async function applyPriceProposals(
   opts: { proposalIds: string[]; actor: string; allowLargeChanges: boolean; deadline?: number },
 ): Promise<PriceApplyResult> {
   const settings = await getPriceSettings(sql);
-  const latest = await latestPriceRun(sql);
   const results: PriceApplyResult["results"] = [];
   const notProcessed: string[] = [];
   const rows = await sql.query<ClaimedProposal & { status: string; eligible: boolean; createdAt: Date; priceTableCode: string }>(
@@ -535,10 +543,6 @@ export async function applyPriceProposals(
       out("STALE", msg);
     };
     try {
-      if (!latest || latest.id !== r.runId) {
-        await stale("Existe uma simulação mais recente: aplique a partir dela");
-        continue;
-      }
       if (r.priceTableCode !== settings.priceTableCode) {
         await stale("A tabela de preço configurada mudou desde a simulação");
         continue;

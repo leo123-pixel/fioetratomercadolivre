@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useState } from "react";
 import { ProductPicker, type PickedProduct } from "@/app/(admin)/pedidos/ProductPicker";
 import { api, errorText } from "@/lib/client-api";
+import { ApproveRow } from "./ApproveRow";
 import { formatDateTime, formatMoney, formatNumber, listingStatusLabel } from "@/lib/format";
 
 export interface Row {
@@ -367,6 +368,7 @@ export function LinkingPanel(props: {
 }) {
   const router = useRouter();
   const [open, setOpen] = useState<string | null>(null);
+  const [approving, setApproving] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error" | "warn" | "info"; text: string } | null>(null);
@@ -620,11 +622,47 @@ export function LinkingPanel(props: {
                         })()}
                       </td>
                       <td>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setOpen(open === r.id ? null : r.id)}>
-                          {open === r.id ? "Fechar" : isLinked(r) ? "Detalhes" : "Vincular"}
-                        </button>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {isLinked(r) && r.manageable && (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={() => {
+                                setApproving(approving === r.id ? null : r.id);
+                                setOpen(null);
+                              }}
+                            >
+                              {approving === r.id ? "Fechar" : "Aprovar"}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => {
+                              setOpen(open === r.id ? null : r.id);
+                              setApproving(null);
+                            }}
+                          >
+                            {open === r.id ? "Fechar" : isLinked(r) ? "Detalhes" : "Vincular"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
+                    {approving === r.id && (
+                      <tr>
+                        <td colSpan={14}>
+                          <ApproveRow
+                            itemId={r.marketplaceItemId}
+                            legacy={r.origin === "EXTERNAL"}
+                            onClose={() => setApproving(null)}
+                            onDone={(msg, kind) => {
+                              setFeedback({ kind, text: msg });
+                              router.refresh();
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )}
                     {open === r.id && (
                       <tr>
                         <td colSpan={14}>
