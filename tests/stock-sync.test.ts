@@ -8,6 +8,7 @@ import { POST as applyPost } from "@/app/api/stock-sync/apply/route";
 import { POST as previewPost } from "@/app/api/stock-sync/preview/route";
 import { PATCH as settingsPatch } from "@/app/api/stock-sync/settings/route";
 import { POST as validatePost } from "@/app/api/stock-sync/validate/route";
+import { resetAdsThrottleForTests } from "@/lib/ads/client";
 import { runTick } from "@/lib/marketplace/scheduler";
 import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
@@ -666,6 +667,41 @@ describe("sincronização automática", () => {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }
   });
+
+  it("30b. ADS fora do ar: a automação respeita o prazo do tick, pausa e confere de novo quando a ADS volta", async () => {
+    const m = await setup([item("MLB1", { available_quantity: 25 })], [{ produtoId: 100, estoque: 8 }]);
+    const p = await product(100);
+    await discover();
+    await link("MLB1", p);
+    const sql = t.sql();
+    const patch = (body: unknown) => settingsPatch(makeRequest("/api/stock-sync/settings", { method: "PATCH", cookies: adminCookies(), headers: ORIGIN, body }));
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      await approve([(await preview()).proposals[0].id]);
+      expect((await patch({ homologate: true })).status).toBe(200);
+      expect((await patch({ autoSyncEnabled: true })).status).toBe(200);
+      m.state.ads[0].estoque = 3;
+      m.state.adsHang = true;
+      const started = Date.now();
+      const deadline = started + 12_000;
+      const down = await runAutoStockSync(sql, { deadline });
+      expect(Date.now()).toBeLessThan(deadline);
+      expect(down).toMatchObject({ ran: true, jobs: 0 });
+      const [prop] = await sql.query<{ reasonCode: string; reason: string }>(
+        `SELECT reason_code AS "reasonCode", reason FROM stock_sync_proposals ORDER BY id DESC LIMIT 1`,
+      );
+      expect(prop).toMatchObject({ reasonCode: "ADS_ERROR", reason: expect.stringMatching(/não respondeu/) });
+      // Logo em seguida nem tenta (evita esperar o timeout de novo no mesmo ciclo).
+      expect(await runAutoStockSync(sql, { deadline: Date.now() + 30_000 })).toMatchObject({ ran: false, reason: expect.stringMatching(/ADS indisponível/) });
+      // ADS de volta: o estoque não ficou marcado como conferido e é atualizado sem esperar o intervalo.
+      m.state.adsHang = false;
+      resetAdsThrottleForTests();
+      expect(await runAutoStockSync(sql)).toMatchObject({ ran: true, jobs: 1 });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(3);
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
+  }, 20_000);
 });
 
 describe("correspondência por código do fabricante", () => {

@@ -1,6 +1,6 @@
 import "server-only";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { AdsApiError, adsEnvironment, getAdsClient } from "../ads/client";
+import { adsEnvironment, adsUnavailable, getAllPagesForIds, isAdsOutage, type PagedReadOptions } from "../ads/client";
 import { mapStocks } from "../ads/schemas";
 import { getEnv } from "../env";
 import { acquireLease, releaseLease } from "../imports/jobs";
@@ -125,29 +125,19 @@ export interface AdsStock {
   error?: string;
 }
 
-export async function fetchAdsStocks(sql: Sql, productIds: number[], settings: StockSyncSettings): Promise<Map<number, AdsStock>> {
+export async function fetchAdsStocks(sql: Sql, productIds: number[], settings: StockSyncSettings, opts: PagedReadOptions = {}): Promise<Map<number, AdsStock>> {
   const out = new Map<number, AdsStock>();
   if (!productIds.length) return out;
   const products = await sql.query<{ id: number; adsProductId: number }>(`SELECT id, ads_product_id AS "adsProductId" FROM products WHERE id = ANY($1::int[])`, [productIds]);
-  const client = getAdsClient();
+  // Depois de uma queda/sem tempo, os lotes seguintes não são tentados (cada um esperaria o timeout de novo).
+  let stopped: string | null = null;
   for (let i = 0; i < products.length; i += 20) {
     const chunk = products.slice(i, i + 20);
     const ids = chunk.map((p) => p.adsProductId);
     const fetchedAt = new Date();
     try {
-      const items: unknown[] = [];
-      for (let page = 1; page <= 20; page++) {
-        let res;
-        try {
-          res = await client.getPage("estoques", { page, ids });
-        } catch (err) {
-          if (!(err instanceof AdsApiError && err.transient)) throw err;
-          await retrySleep(Math.max(err.retryAfterMs ?? 0, 1_000));
-          res = await client.getPage("estoques", { page, ids });
-        }
-        items.push(...res.items);
-        if (!res.hasNext || !res.items.length) break;
-      }
+      if (stopped) throw new Error(stopped);
+      const items = await getAllPagesForIds("estoques", ids, opts);
       const mapped = mapStocks(items);
       const rows = mapped.rows.filter((r) => ids.includes(r.ads_product_id));
       await upsertStocks(sql, rows);
@@ -164,6 +154,7 @@ export async function fetchAdsStocks(sql: Sql, productIds: number[], settings: S
       }
     } catch (err) {
       const message = err instanceof Error ? err.message.slice(0, 300) : "Erro na ADS";
+      if (isAdsOutage(err)) stopped = message;
       for (const p of chunk) out.set(p.id, { status: "ERROR", quantity: null, branches: [], fetchedAt, error: message });
     }
   }
@@ -271,7 +262,7 @@ interface Context {
   signals: Map<string, { unmapped: number; lastOrderAt: Date | null }>;
 }
 
-async function buildContext(sql: Sql, selected: Pool[], all: Pool[], settings: StockSyncSettings): Promise<Context> {
+async function buildContext(sql: Sql, selected: Pool[], all: Pool[], settings: StockSyncSettings, adsOpts: PagedReadOptions = {}): Promise<Context> {
   const consumers = new Map<number, Set<string>>();
   for (const p of all) {
     if (!p.consumer) continue;
@@ -279,7 +270,7 @@ async function buildContext(sql: Sql, selected: Pool[], all: Pool[], settings: S
   }
   const productIds = [...new Set(selected.flatMap((p) => (p.components ?? []).map((c) => c.productId)))];
   const [ads, pending, policies, signals] = await Promise.all([
-    fetchAdsStocks(sql, productIds, settings),
+    fetchAdsStocks(sql, productIds, settings, adsOpts),
     pendingConsumption(sql, productIds, settings.pendingOrderWindowDays),
     getGroupPolicies(sql, productIds),
     saleSignals(
@@ -535,7 +526,7 @@ export async function runPreview(sql: Sql, opts: PreviewOptions): Promise<Previe
   const summary: Record<string, number> = { eligible: 0, increase: 0, decrease: 0, inSync: 0, ineligible: 0 };
   let evaluated = 0;
   try {
-    const ctx = await buildContext(sql, selected, all, settings);
+    const ctx = await buildContext(sql, selected, all, settings, { deadline: opts.deadline, auto: opts.mode === "AUTO" });
     for (const pool of selected) {
       if (timeLeft(opts.deadline) < 5_000) break;
       const e = await evaluatePool(pool, ctx);
@@ -934,7 +925,7 @@ async function runJob(sql: Sql, job: ClaimedJob, deadline?: number): Promise<voi
   if (!pool) return finishJob(sql, job, { status: "STALE", code: "POOL_NOT_FOUND", message: "Anúncio fora do inventário ou sem vínculo" });
   for (let round = 0; round < 2; round++) {
     // Reconsulta ADS e ML imediatamente antes da escrita.
-    const ctx = await buildContext(sql, [pool], all, settings);
+    const ctx = await buildContext(sql, [pool], all, settings, { deadline });
     const e = await evaluatePool(pool, ctx);
     await logAttempt(sql, job.id, {
       operation: "EVALUATE",
@@ -1076,13 +1067,19 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
       pools = pools.filter((p) => p.components!.every((c) => approved.has(c.productId)));
     }
     if (!pools.length) return { ran: false, reason: "Nenhum anúncio vinculado para automatizar" };
+    // ADS fora do ar há pouco (nesta instância): nem consulta; o próximo tick tenta de novo.
+    const down = adsUnavailable();
+    if (down) return { ran: false, reason: down };
     // Rodízio: cada estoque é conferido no máximo uma vez por intervalo; o que não couber num tick fica para o próximo.
+    // Não contam como conferidos: falha ao ler a ADS (fora do ar/sem tempo) e propostas que ficaram sem atualização
+    // (acima do limite por execução) — esses voltam no próximo tick.
     if (!opts.force) {
       const recent = new Set(
         (
           await sql.query<{ poolKey: string }>(
             `SELECT DISTINCT p.pool_key AS "poolKey" FROM stock_sync_proposals p JOIN stock_sync_runs r ON r.id = p.run_id
-             WHERE r.mode = 'AUTO' AND p.created_at > now() - make_interval(mins => $1::int)`,
+             WHERE r.mode = 'AUTO' AND p.created_at > now() - make_interval(mins => $1::int)
+               AND COALESCE(p.reason_code, '') <> 'ADS_ERROR' AND p.status NOT IN ('PROPOSED', 'SUPERSEDED')`,
             [settings.autoSyncIntervalMin],
           )
         ).map((r) => r.poolKey),

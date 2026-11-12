@@ -66,11 +66,15 @@ export class AdsClient {
     return this.env.retryBaseMs;
   }
 
-  async getPage(resource: PagedResource, req: PageRequest): Promise<AdsPage> {
+  get timeoutMs(): number {
+    return this.env.timeoutMs;
+  }
+
+  async getPage(resource: PagedResource, req: PageRequest, opts: { timeoutMs?: number } = {}): Promise<AdsPage> {
     const params = new URLSearchParams({ page: String(req.page), pageSize: String(req.pageSize ?? this.env.pageSize) });
     for (const id of req.ids ?? []) params.append("ids", String(id));
     if (resource === "estoques" && this.env.branchCnpj) params.set("cnpjfilial", this.env.branchCnpj);
-    const body = await this.request(resource, params);
+    const body = await this.request(resource, params, opts.timeoutMs);
     const parsed = pageSchema.safeParse(body);
     if (!parsed.success) throw new AdsApiError("invalid_response", `Resposta paginada inesperada em /${resource}`);
     return parsed.data;
@@ -88,7 +92,7 @@ export class AdsClient {
     lastRequestAt = Date.now();
   }
 
-  private async request(resource: string, params: URLSearchParams): Promise<unknown> {
+  private async request(resource: string, params: URLSearchParams, timeoutMs = this.env.timeoutMs): Promise<unknown> {
     await this.throttle();
     const qs = params.toString();
     const url = `${this.env.baseUrl}/api/v1/${this.env.cnpj}/${resource}${qs ? `?${qs}` : ""}`;
@@ -98,13 +102,13 @@ export class AdsClient {
       res = await this.fetchImpl(url, {
         method: "GET",
         headers: { "x-api-key": this.env.apiKey, "User-Agent": this.env.userAgent, Accept: "application/json" },
-        signal: AbortSignal.timeout(this.env.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         cache: "no-store",
       });
     } catch (err) {
       const name = (err as Error)?.name;
       if (name === "TimeoutError" || name === "AbortError") {
-        throw new AdsApiError("timeout", `Tempo esgotado ao consultar /${resource}`);
+        throw new AdsApiError("timeout", `ADS não respondeu em ${Math.round(timeoutMs / 1000)} s ao consultar /${resource}`);
       }
       throw new AdsApiError("network", `Falha de rede ao consultar /${resource}`);
     }
@@ -268,7 +272,91 @@ export function getAdsClient(): AdsClient {
   return new AdsClient(getAdsEnv());
 }
 
-/** Somente para testes: zera o espaçamento entre requisições. */
+/** Somente para testes: zera o espaçamento entre requisições e o estado de indisponibilidade. */
 export function resetAdsThrottleForTests() {
   lastRequestAt = 0;
+  adsDownUntil = 0;
+  adsDownReason = "";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Leituras em lote dentro de um prazo (automação do agendador).
+//
+// A ADS pode ficar fora do ar (servidor desligado ou sem responder). Sem limite, cada página esperava
+// o timeout cheio (20 s) e mais uma retentativa, e o tick inteiro estourava os 60 s da função.
+// Agora cada requisição cabe no prazo do chamador e, depois de uma falha de conexão/tempo/5xx,
+// as leituras automáticas desta instância param por alguns minutos (o próximo tick tenta de novo).
+// ---------------------------------------------------------------------------------------------
+
+const ADS_DOWN_COOLDOWN_MS = 3 * 60_000;
+/** Tempo mínimo restante para iniciar uma requisição; cada uma termina ≥ 7 s antes do prazo (avaliação e gravação). */
+const MIN_LEFT_MS = 9_000;
+/** Teto por requisição nas leituras automáticas: uma ADS lenta não consome o tick inteiro. */
+const AUTO_TIMEOUT_MS = 12_000;
+let adsDownUntil = 0;
+let adsDownReason = "";
+
+/** Motivo, se a ADS foi marcada como indisponível há pouco nesta instância. */
+export function adsUnavailable(): string | null {
+  return Date.now() < adsDownUntil ? adsDownReason : null;
+}
+
+function markAdsUnavailable(err: AdsApiError) {
+  adsDownUntil = Date.now() + ADS_DOWN_COOLDOWN_MS;
+  adsDownReason = `ADS indisponível (${err.message}); nova tentativa no próximo ciclo`;
+}
+
+/** Falha de disponibilidade (fora do ar, sem resposta, 5xx ou sem tempo): não adianta tentar os lotes seguintes agora. */
+export function isAdsOutage(err: unknown): boolean {
+  return err instanceof AdsApiError && (err.kind === "timeout" || err.kind === "network" || err.kind === "server");
+}
+
+/** "Sem tempo neste ciclo": não indica falha da ADS. */
+export class AdsNoTimeError extends AdsApiError {
+  constructor() {
+    super("timeout", "Sem tempo neste ciclo para consultar a ADS; fica para o próximo");
+  }
+}
+
+export interface PagedReadOptions {
+  /** Instante (Date.now()) até o qual a leitura precisa terminar. */
+  deadline?: number;
+  /** Leitura da automação: respeita a indisponibilidade recente e usa timeout curto. */
+  auto?: boolean;
+}
+
+/** Lê todas as páginas de um recurso filtrado por ids, respeitando prazo e indisponibilidade da ADS. */
+export async function getAllPagesForIds(resource: PagedResource, ids: number[], opts: PagedReadOptions = {}): Promise<unknown[]> {
+  const client = getAdsClient();
+  const items: unknown[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await getPageWithin(client, resource, page, ids, opts);
+    items.push(...res.items);
+    if (!res.hasNext || !res.items.length) break;
+  }
+  return items;
+}
+
+async function getPageWithin(client: AdsClient, resource: PagedResource, page: number, ids: number[], opts: PagedReadOptions): Promise<AdsPage> {
+  for (let attempt = 1; ; attempt++) {
+    if (opts.auto) {
+      const down = adsUnavailable();
+      if (down) throw new AdsApiError("network", down);
+    }
+    const left = opts.deadline === undefined ? Infinity : opts.deadline - Date.now();
+    if (left < MIN_LEFT_MS) throw new AdsNoTimeError();
+    const timeoutMs = Math.max(1_000, Math.min(client.timeoutMs, opts.auto ? AUTO_TIMEOUT_MS : Infinity, left - 7_000));
+    try {
+      return await client.getPage(resource, { page, ids }, { timeoutMs });
+    } catch (err) {
+      if (!(err instanceof AdsApiError) || !err.transient) throw err;
+      // Timeout não é repetido (outra tentativa tende a esperar o mesmo tempo); demais transitórios, uma vez.
+      const outage = err.kind === "timeout" || err.kind === "network" || err.kind === "server";
+      if (err.kind === "timeout" || attempt >= 2) {
+        if (outage) markAdsUnavailable(err);
+        throw err;
+      }
+      await retrySleep(Math.max(err.retryAfterMs ?? 0, 1_000));
+    }
+  }
 }

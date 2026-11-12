@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { resetAdsThrottleForTests } from "@/lib/ads/client";
 import type { PriceRow } from "@/lib/ads/schemas";
 import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
@@ -136,7 +137,7 @@ async function scenario(opts: { mlPrices: Record<string, number>; ads: ReturnTyp
     const vars = opts.variations?.[id];
     m.state.items.set(id, { ...item(id), price: p, ...(vars ? { variations: vars.map((v) => ({ id: v, available_quantity: 5, price: p })) } : {}) } as never);
   }
-  const state = { ads: opts.ads, promo: new Set(opts.promo ?? []), puts: [] as { path: string; body: Record<string, unknown> }[] };
+  const state = { ads: opts.ads, promo: new Set(opts.promo ?? []), puts: [] as { path: string; body: Record<string, unknown> }[], adsDown: false };
   const inner = m.handler;
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -145,6 +146,7 @@ async function scenario(opts: { mlPrices: Record<string, number>; ads: ReturnTyp
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       const method = (init?.method ?? "GET").toUpperCase();
       if (url.origin === ADS_BASE && url.pathname.endsWith("/tabela-precos-itens")) {
+        if (state.adsDown) return json({ title: "Service Unavailable" }, 503);
         const ids = url.searchParams.getAll("ids").map(Number);
         const rows = state.ads.filter((r) => ids.includes(r.produtoId));
         return json({ items: rows, page: 1, pageSize: 100, total: rows.length, hasNext: false });
@@ -319,6 +321,28 @@ describe("preço automático", () => {
       expect(s.puts.some((p) => p.path === "/items/MLB33")).toBe(false);
       await updatePriceSettings(sql, { autoSyncEnabled: false }, ACTOR);
       expect(await runAutoPriceSync(sql, { force: true })).toMatchObject({ ran: false });
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
+  });
+
+  it("ADS fora do ar: nada é aplicado, a automação pausa e os preços voltam a ser conferidos quando a ADS responde", async () => {
+    const p1 = await product(9311);
+    const s = await scenario({ mlPrices: { MLB41: 50 }, ads: [adsPrice(9311, "M", 55)] });
+    await link("MLB41", p1);
+    const sql = t.sql();
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      await updatePriceSettings(sql, { autoSyncEnabled: true }, ACTOR);
+      s.adsDown = true;
+      expect(await runAutoPriceSync(sql, { deadline: Date.now() + 30_000 })).toMatchObject({ ran: true, evaluated: 1, proposed: 0, applied: 0 });
+      expect(s.puts).toHaveLength(0);
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/ADS indisponível/) });
+      s.adsDown = false;
+      resetAdsThrottleForTests();
+      // O anúncio com erro de ADS não conta como conferido: entra já no próximo ciclo.
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: true, applied: 1 });
+      expect(s.puts).toEqual([{ path: "/items/MLB41", body: { price: 55 } }]);
     } finally {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }

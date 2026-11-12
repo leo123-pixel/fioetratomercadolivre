@@ -1,10 +1,10 @@
 import "server-only";
-import { AdsApiError, getAdsClient } from "../ads/client";
+import { adsUnavailable, getAllPagesForIds, isAdsOutage, type PagedReadOptions } from "../ads/client";
 import { multigetItems } from "../meli/items";
 import { mapPrices, type PriceRow } from "../ads/schemas";
 import { upsertPrices } from "../imports/upserts";
 import { logger, sanitize } from "../logger";
-import { retrySleep, withReadRetry } from "../marketplace/errors";
+import { withReadRetry } from "../marketplace/errors";
 import { MeliHttpError, meliRequest } from "../meli/api";
 import { randomUUID } from "node:crypto";
 import { acquireLease, releaseLease } from "../imports/jobs";
@@ -278,33 +278,24 @@ async function loadLinkedRows(sql: Sql, itemIds?: string[]): Promise<LinkedRow[]
 }
 
 /** Preço ao vivo na ADS (o cache product_prices é atualizado como efeito colateral). Chave: products.id. */
-export async function fetchAdsPrices(sql: Sql, productIds: number[], settings: PriceSyncSettings): Promise<Map<number, AdsPrice>> {
+export async function fetchAdsPrices(sql: Sql, productIds: number[], settings: PriceSyncSettings, opts: PagedReadOptions = {}): Promise<Map<number, AdsPrice>> {
   const out = new Map<number, AdsPrice>();
   if (!productIds.length) return out;
   const products = await sql.query<{ id: number; adsProductId: number }>(`SELECT id, ads_product_id AS "adsProductId" FROM products WHERE id = ANY($1::int[])`, [productIds]);
-  const client = getAdsClient();
+  // Depois de uma queda/sem tempo, os lotes seguintes não são tentados (cada um esperaria o timeout de novo).
+  let stopped: string | null = null;
   for (let i = 0; i < products.length; i += 20) {
     const chunk = products.slice(i, i + 20);
     const ids = chunk.map((p) => p.adsProductId);
     try {
-      const items: unknown[] = [];
-      for (let page = 1; page <= 20; page++) {
-        let res;
-        try {
-          res = await client.getPage("tabela-precos-itens", { page, ids });
-        } catch (err) {
-          if (!(err instanceof AdsApiError && err.transient)) throw err;
-          await retrySleep(Math.max(err.retryAfterMs ?? 0, 1_000));
-          res = await client.getPage("tabela-precos-itens", { page, ids });
-        }
-        items.push(...res.items);
-        if (!res.hasNext || !res.items.length) break;
-      }
+      if (stopped) throw new Error(stopped);
+      const items = await getAllPagesForIds("tabela-precos-itens", ids, opts);
       const rows = mapPrices(items).rows.filter((r) => ids.includes(r.ads_product_id));
       await upsertPrices(sql, rows);
       for (const p of chunk) out.set(p.id, pickPrice(rows, p.adsProductId, settings));
     } catch (err) {
       const message = err instanceof Error ? err.message.slice(0, 300) : "Erro na ADS";
+      if (isAdsOutage(err)) stopped = message;
       for (const p of chunk) out.set(p.id, { status: "ERROR", price: null, branchId: null, updatedAt: null, error: message });
     }
   }
@@ -404,7 +395,7 @@ export async function runPricePreview(sql: Sql, opts: { requestedBy: string; ite
       }
       const chunk = itemIds.slice(i, i + 40);
       const productIds = [...new Set(chunk.flatMap((id) => byItem.get(id)!.map((r) => r.productId).filter((v): v is number => v !== null)))];
-      const [ads, ml] = await Promise.all([fetchAdsPrices(sql, productIds, settings), readMlPrices(chunk)]);
+      const [ads, ml] = await Promise.all([fetchAdsPrices(sql, productIds, settings, { deadline: opts.deadline, auto: opts.requestedBy === PRICE_AUTO_ACTOR }), readMlPrices(chunk)]);
       for (const itemId of chunk) {
         let ev = evaluatePrice(byItem.get(itemId)!, ads, ml.get(itemId)!, settings);
         if (ev.needsPromotionCheck) {
@@ -571,7 +562,7 @@ export async function applyPriceProposals(
 
   // Reconsulta da ADS em lote para as propostas válidas.
   const valid = rows.filter((r) => r.status === "PROPOSED" && r.eligible);
-  const freshAds = await fetchAdsPrices(sql, [...new Set(valid.flatMap((r) => r.productIds))], settings);
+  const freshAds = await fetchAdsPrices(sql, [...new Set(valid.flatMap((r) => r.productIds))], settings, { deadline: opts.deadline, auto: opts.actor === PRICE_AUTO_ACTOR });
   const freshMl = await readMlPrices([...new Set(valid.map((r) => r.itemId))]);
 
   for (const r of rows) {
@@ -718,13 +709,20 @@ export async function runAutoPriceSync(sql: Sql, opts: { deadline?: number; forc
   try {
     let itemIds = [...new Set((await loadLinkedRows(sql)).map((r) => r.itemId))];
     if (!itemIds.length) return { ran: false, reason: "Nenhum anúncio legado vinculado" };
+    // ADS fora do ar há pouco (nesta instância): nem consulta; o próximo tick tenta de novo.
+    const down = adsUnavailable();
+    if (down) return { ran: false, reason: down };
+    // Não contam como conferidos: falha ao ler a ADS (fora do ar/sem tempo) e mudanças que deveriam ter sido
+    // aplicadas sozinhas mas ficaram pendentes (faltou tempo no tick) — voltam no próximo tick.
     if (!opts.force) {
       const recent = new Set(
         (
           await sql.query<{ itemId: string }>(
             `SELECT DISTINCT p.marketplace_item_id AS "itemId" FROM price_sync_proposals p JOIN price_sync_runs r ON r.id = p.run_id
-             WHERE r.requested_by = $1::text AND p.created_at > now() - make_interval(mins => $2::int)`,
-            [PRICE_AUTO_ACTOR, settings.autoSyncIntervalMin],
+             WHERE r.requested_by = $1::text AND p.created_at > now() - make_interval(mins => $2::int)
+               AND COALESCE(p.reason_code, '') <> 'ADS_ERROR'
+               AND NOT (p.status IN ('PROPOSED', 'STALE') AND (NOT p.large_change OR $3::boolean))`,
+            [PRICE_AUTO_ACTOR, settings.autoSyncIntervalMin, settings.autoApplyLargeChanges],
           )
         ).map((r) => r.itemId),
       );

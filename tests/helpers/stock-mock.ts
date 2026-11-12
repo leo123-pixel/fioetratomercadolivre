@@ -32,6 +32,8 @@ export interface StockMockState {
   calls: { method: string; path: string; body: unknown; headers: Record<string, string> }[];
   ads: { produtoId: number; filialId: string; estoque: number }[];
   adsFail: boolean;
+  /** Simula a ADS desligada sem responder: a requisição só termina quando o cliente desiste (timeout). */
+  adsHang?: boolean;
   tags: string[];
   /** Simula o desligamento do multiget: GET /items?ids= responde 403 "Resource deprecated". */
   multigetDeprecated?: boolean;
@@ -113,6 +115,12 @@ export function mockStock(init: Partial<StockMockState> = {}) {
       if (headers["x-api-key"] !== ADS_KEY) return json({ title: "Unauthorized" }, 401);
       if (!url.pathname.startsWith(`/api/v1/${ADS_CNPJ}/estoques`)) return json({ title: "not found" }, 404);
       if (state.adsFail) return json({ title: "erro simulado" }, 500);
+      if (state.adsHang) {
+        return new Promise<Response>((_, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason ?? Object.assign(new Error("aborted"), { name: "AbortError" })));
+        });
+      }
       const ids = url.searchParams.getAll("ids").map(Number);
       const rows = state.ads.filter((s) => ids.includes(s.produtoId));
       const page = Number(url.searchParams.get("page") ?? 1);
