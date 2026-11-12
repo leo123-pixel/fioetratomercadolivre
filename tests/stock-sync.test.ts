@@ -331,13 +331,13 @@ describe("modelos de estoque", () => {
 
   it("17. multiorigem: selling_address via user-products/stock com x-version; seller_warehouse não é elegível", async () => {
     const m = await setup(
-      [item("MLB1", { user_product_id: "MLBU1", available_quantity: 20 }), item("MLB2", { user_product_id: "MLBU2", available_quantity: 4 })],
+      [item("MLB1", { user_product_id: "MLAU1", available_quantity: 20 }), item("MLB2", { user_product_id: "MLBU2", available_quantity: 4 })],
       [
         { produtoId: 100, estoque: 7 },
         { produtoId: 101, estoque: 7 },
       ],
     );
-    m.state.upStock.set("MLBU1", { locations: [{ type: "selling_address", quantity: 20 }], version: 3 });
+    m.state.upStock.set("MLAU1", { locations: [{ type: "selling_address", quantity: 20 }], version: 3 });
     m.state.upStock.set("MLBU2", { locations: [{ type: "seller_warehouse", quantity: 4, store_id: "S1" }], version: 1 });
     await discover();
     await link("MLB1", await product(100));
@@ -347,10 +347,32 @@ describe("modelos de estoque", () => {
     expect(byItem(r.proposals, "MLB2")).toMatchObject({ stockModel: "MULTI_WAREHOUSE", eligible: false, reasonCode: "MULTI_WAREHOUSE" });
     await approve([byItem(r.proposals, "MLB1").id]);
     const put = m.puts()[0];
-    expect(put.path).toBe("/user-products/MLBU1/stock/type/selling_address");
+    expect(put.path).toBe("/user-products/MLAU1/stock/type/selling_address");
     expect(put.headers["x-version"]).toBe("3");
     expect(put.body).toEqual({ quantity: 7 });
-    expect(m.state.upStock.get("MLBU1")!.locations[0].quantity).toBe(7);
+    expect(m.state.upStock.get("MLAU1")!.locations[0].quantity).toBe(7);
+  });
+
+  it("17b. MLB: selling_address bloqueado na API de User Products → grava pelo anúncio e confere no User Product", async () => {
+    const m = await setup(
+      [item("MLB1", { user_product_id: "MLBU1", available_quantity: 2 })],
+      [
+        { produtoId: 100, estoque: 6 },
+        { produtoId: 101, estoque: 6 },
+      ],
+    );
+    m.state.upStock.set("MLBU1", { locations: [{ type: "selling_address", quantity: 2 }], version: 1 });
+    await discover();
+    await link("MLB1", await product(100));
+    const r = await preview();
+    expect(byItem(r.proposals, "MLB1")).toMatchObject({ stockModel: "UP_SELLING_ITEM", marketplaceQuantity: 2, proposedQuantity: 6, eligible: true });
+    const out = await approve([byItem(r.proposals, "MLB1").id]);
+    expect(out.jobs[0].status).toBe("SUCCEEDED");
+    const put = m.puts()[0];
+    expect(put.path).toBe("/items/MLB1");
+    expect(put.body).toEqual({ available_quantity: 6 });
+    expect(m.puts().some((p) => p.path.includes("/user-products/"))).toBe(false);
+    expect(m.state.upStock.get("MLBU1")!.locations[0].quantity).toBe(6);
   });
 
   it("18. Full: não elegível (logística fulfillment ou só meli_facility)", async () => {
@@ -371,8 +393,8 @@ describe("modelos de estoque", () => {
   });
 
   it("19. conflito de x-version: reconsulta e reavalia antes de escrever de novo", async () => {
-    const m = await setup([item("MLB1", { user_product_id: "MLBU1", available_quantity: 20 })], [{ produtoId: 100, estoque: 7 }]);
-    m.state.upStock.set("MLBU1", { locations: [{ type: "selling_address", quantity: 20 }], version: 3 });
+    const m = await setup([item("MLB1", { user_product_id: "MLAU1", available_quantity: 20 })], [{ produtoId: 100, estoque: 7 }]);
+    m.state.upStock.set("MLAU1", { locations: [{ type: "selling_address", quantity: 20 }], version: 3 });
     await discover();
     await link("MLB1", await product(100));
     const prop = (await preview()).proposals[0];

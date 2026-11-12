@@ -64,6 +64,7 @@ const MODEL_LABEL: Record<string, string> = {
   CLASSIC_VARIATION: "variação",
   UP_SHARED_ITEM: "User Product",
   UP_SELLING_ADDRESS: "multiorigem (selling_address)",
+  UP_SELLING_ITEM: "User Product (via anúncio)",
   MULTI_WAREHOUSE: "depósitos do vendedor",
   FULFILLMENT: "Full",
   UNKNOWN: "—",

@@ -62,6 +62,8 @@ export function mockStock(init: Partial<StockMockState> = {}) {
     if (up) {
       const s = state.upStock.get(decodeURIComponent(up[1]));
       if (!s) return json({ message: "not found" }, 404);
+      // Como no ML real: só MLA/MLC aceitam escrita em selling_address.
+      if (!/^(MLA|MLC)/.test(decodeURIComponent(up[1]))) return json({ message: "the site is blocked for modifications to the selling address", error: "bad_request" }, 400);
       if (!headers["x-version"]) return json({ message: "x-version required" }, 400);
       if (Number(headers["x-version"]) !== s.version) return json({ message: "version conflict" }, 409);
       const loc = s.locations.find((l) => l.type === "selling_address")!;
@@ -85,7 +87,13 @@ export function mockStock(init: Partial<StockMockState> = {}) {
     }
     if (Object.keys(body).some((k) => k !== "available_quantity")) return json({ message: "campo não permitido no teste" }, 400);
     const q = Number(body.available_quantity);
-    if (it.user_product_id && !state.upStock.has(it.user_product_id)) {
+    const upS = it.user_product_id ? state.upStock.get(it.user_product_id) : undefined;
+    if (upS && upS.locations.every((l) => l.type === "selling_address")) {
+      // MLB: escrita pelo anúncio atualiza o selling_address do User Product e replica entre os anúncios dele.
+      upS.locations[0].quantity = q;
+      upS.version++;
+      for (const other of state.items.values()) if (other.user_product_id === it.user_product_id) setQty(other, q);
+    } else if (it.user_product_id && !state.upStock.has(it.user_product_id)) {
       // Sem estoque distribuído, o ML replica a quantidade entre os anúncios do mesmo User Product.
       for (const other of state.items.values()) if (other.user_product_id === it.user_product_id) setQty(other, q);
     } else setQty(it, q);

@@ -11,12 +11,18 @@ import type { MlItem } from "./legacy";
  *                        são enviadas, só a alvo com quantidade — omitir uma variação a excluiria).
  *   UP_SHARED_ITEM     — User Product sem estoque distribuído: o ML sincroniza o estoque entre os anúncios do
  *                        mesmo user_product_id; atualiza-se um deles via PUT /items/{id}.
- *   UP_SELLING_ADDRESS — estoque distribuído (multiorigem) com localização selling_address:
+ *   UP_SELLING_ADDRESS — estoque distribuído com localização selling_address, em site que aceita escrita nela (MLA/MLC):
  *                        PUT /user-products/{id}/stock/type/selling_address { quantity } com cabeçalho x-version.
+ *   UP_SELLING_ITEM    — selling_address em site que bloqueia essa escrita (MLB: "the site is blocked for
+ *                        modifications to the selling address"): o estoque é gravado pelo anúncio, PUT /items/{id}
+ *                        (available_quantity ou variações), e conferido depois no estoque do User Product.
  *   MULTI_WAREHOUSE    — localizações seller_warehouse: exige mapeamento depósito ↔ filial (não suportado → não elegível).
  *   FULFILLMENT        — Full / meli_facility: estoque do ML, nunca atualizado como se fosse estoque físico da ADS.
  */
-export type StockModel = "CLASSIC" | "CLASSIC_VARIATION" | "UP_SHARED_ITEM" | "UP_SELLING_ADDRESS" | "MULTI_WAREHOUSE" | "FULFILLMENT" | "UNKNOWN";
+export type StockModel = "CLASSIC" | "CLASSIC_VARIATION" | "UP_SHARED_ITEM" | "UP_SELLING_ADDRESS" | "UP_SELLING_ITEM" | "MULTI_WAREHOUSE" | "FULFILLMENT" | "UNKNOWN";
+
+/** Sites em que o vendedor pode gravar a localização selling_address pela API de User Products. */
+const SELLING_ADDRESS_WRITABLE_SITES = new Set(["MLA", "MLC"]);
 
 export interface PoolRef {
   key: string;
@@ -134,8 +140,19 @@ export async function readRemoteState(pool: PoolRef): Promise<RemoteState> {
         }
         return ineligible(b, "NO_STOCK_LOCATION", "User Product sem localização de estoque conhecida");
       }
-      if (!up.version) return ineligible({ ...b, model: "UP_SELLING_ADDRESS" }, "NO_VERSION", "O Mercado Livre não devolveu x-version: atualização bloqueada");
       const quantity = selling.reduce((a, l) => a + (l.quantity ?? 0), 0);
+      if (!SELLING_ADDRESS_WRITABLE_SITES.has(pool.userProductId.slice(0, 3).toUpperCase())) {
+        // MLB: selling_address não é gravável pela API de User Products; grava-se pelo anúncio.
+        const target = live.find((i) => (pool.variationId ? i.variationIds.includes(pool.variationId) : true));
+        if (pool.variationId && !target) {
+          return ineligible({ ...b, model: "UP_SELLING_ITEM" }, "VARIATION_NOT_FOUND", "Variação não encontrada no anúncio");
+        }
+        if (!pool.variationId && live.some((i) => i.variationIds.length)) {
+          return ineligible({ ...b, model: "UP_SELLING_ITEM" }, "VARIATION_MAPPING_REQUIRED", "Anúncio com variações: vincule cada variação");
+        }
+        return { ...b, model: "UP_SELLING_ITEM", quantity, writable: true, reasonCode: null, reason: null };
+      }
+      if (!up.version) return ineligible({ ...b, model: "UP_SELLING_ADDRESS" }, "NO_VERSION", "O Mercado Livre não devolveu x-version: atualização bloqueada");
       return { ...b, model: "UP_SELLING_ADDRESS", quantity, writable: true, reasonCode: null, reason: null };
     }
     // Sem estoque distribuído: o ML replica o estoque entre os anúncios do mesmo User Product.
@@ -180,6 +197,12 @@ export function buildWrite(pool: PoolRef, state: RemoteState, target: number): W
         body: { quantity: target },
         headers: { "x-version": state.version! },
       };
+    case "UP_SELLING_ITEM":
+      if (!pool.variationId) {
+        const item = state.items.find((i) => i.found && !TERMINAL.has(i.status ?? "") && !i.subStatus.includes("deleted"))!;
+        return { operation: "PUT_ITEM_QUANTITY", method: "PUT", path: `/items/${item.itemId}`, body: { available_quantity: target } };
+      }
+    // falls through: variação de User Product em MLB é gravada como variação do anúncio.
     case "CLASSIC_VARIATION": {
       const item = state.items.find((i) => i.found && i.variationIds.includes(pool.variationId))!;
       return {
