@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { resetAdsThrottleForTests } from "@/lib/ads/client";
+import { setAdsClockForTesting } from "@/lib/ads/hours";
 import type { PriceRow } from "@/lib/ads/schemas";
 import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
@@ -343,6 +344,24 @@ describe("preço automático", () => {
       // O anúncio com erro de ADS não conta como conferido: entra já no próximo ciclo.
       expect(await runAutoPriceSync(sql)).toMatchObject({ ran: true, applied: 1 });
       expect(s.puts).toEqual([{ path: "/items/MLB41", body: { price: 55 } }]);
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
+  });
+
+  it("fora do horário da ADS o preço automático fica em pausa", async () => {
+    const p1 = await product(9321);
+    const s = await scenario({ mlPrices: { MLB51: 50 }, ads: [adsPrice(9321, "M", 55)] });
+    await link("MLB51", p1);
+    const sql = t.sql();
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      await updatePriceSettings(sql, { autoSyncEnabled: true }, ACTOR);
+      setAdsClockForTesting(() => new Date("2026-11-13T02:00:00Z")); // 22:00 em Campo Grande
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: false, reason: expect.stringMatching(/Fora do horário da ADS/) });
+      expect(s.puts).toHaveLength(0);
+      setAdsClockForTesting(() => new Date("2026-11-12T12:00:00Z")); // 08:00
+      expect(await runAutoPriceSync(sql)).toMatchObject({ ran: true, applied: 1 });
     } finally {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }

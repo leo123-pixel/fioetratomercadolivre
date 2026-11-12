@@ -1,4 +1,5 @@
 import "server-only";
+import { DEFAULT_ADS_HOURS } from "../ads/hours";
 import type { Sql } from "../sql";
 
 /**
@@ -31,6 +32,9 @@ export interface StockSyncSettings {
   autoSyncIntervalMin: number;
   /** ALL_LINKED = todo anúncio vinculado e elegível; APPROVED_GROUPS = só produtos marcados como aprovados. */
   autoSyncScope: AutoSyncScope;
+  /** Janela de funcionamento da ADS ("HH:MM", horário de Campo Grande). Fora dela as automações não rodam. */
+  adsHoursStart: string | null;
+  adsHoursEnd: string | null;
   /** Idade máxima do saldo ADS para permitir AUMENTO do estoque anunciado. */
   maxStockAgeMinutes: number;
   /** Reserva de segurança padrão por produto (unidades). */
@@ -56,6 +60,8 @@ export const DEFAULT_SETTINGS: StockSyncSettings = {
   autoSyncEnabled: false,
   autoSyncIntervalMin: 30,
   autoSyncScope: "ALL_LINKED",
+  adsHoursStart: DEFAULT_ADS_HOURS.start,
+  adsHoursEnd: DEFAULT_ADS_HOURS.end,
   maxStockAgeMinutes: 15,
   defaultSafetyReserve: 0,
   branchIds: null,
@@ -95,6 +101,8 @@ export interface SettingsPatch {
   autoSyncEnabled?: boolean;
   autoSyncIntervalMin?: number;
   autoSyncScope?: AutoSyncScope;
+  adsHoursStart?: string | null;
+  adsHoursEnd?: string | null;
   maxStockAgeMinutes?: number;
   defaultSafetyReserve?: number;
   branchIds?: string[] | null;
@@ -124,6 +132,8 @@ export async function updateStockSettings(sql: Sql, patch: SettingsPatch, actor:
     if (patch[k] !== undefined) next[k] = patch[k]!;
   }
   if (patch.autoSyncScope !== undefined) next.autoSyncScope = patch.autoSyncScope;
+  if (patch.adsHoursStart !== undefined) next.adsHoursStart = patch.adsHoursStart || null;
+  if (patch.adsHoursEnd !== undefined) next.adsHoursEnd = patch.adsHoursEnd || null;
   if (patch.branchIds !== undefined) next.branchIds = patch.branchIds && patch.branchIds.length ? [...new Set(patch.branchIds)] : null;
   if (patch.stockSourceConfirmed !== undefined) {
     next.stockSourceConfirmed = patch.stockSourceConfirmed;

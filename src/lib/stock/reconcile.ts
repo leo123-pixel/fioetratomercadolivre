@@ -1,6 +1,7 @@
 import "server-only";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { adsEnvironment, adsUnavailable, getAllPagesForIds, isAdsOutage, type PagedReadOptions } from "../ads/client";
+import { adsHoursState } from "../ads/hours";
 import { mapStocks } from "../ads/schemas";
 import { getEnv } from "../env";
 import { acquireLease, releaseLease } from "../imports/jobs";
@@ -1055,6 +1056,9 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
   const settings = await getStockSettings(sql);
   const state = autoSyncState(settings);
   if (!state.active) return { ran: false, reason: state.reason };
+  // Fora do expediente da ADS (servidores desligados) nem tenta.
+  const hours = adsHoursState(settings);
+  if (!hours.open) return { ran: false, reason: hours.reason };
   const owner = randomUUID();
   if (!(await acquireLease(sql, owner, "stock-auto-sync"))) return { ran: false, reason: "Outra execução em andamento" };
   try {
@@ -1115,6 +1119,9 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
 /** Chamado pelo tick do agendador: retentativas de jobs já autorizados e automação (se ativa e vencida). */
 export async function runStockSyncTick(sql: Sql, deadline: number): Promise<{ processed: number; auto: AutoResult }> {
   let processed = 0;
+  // Fora do expediente da ADS as retentativas também esperam (cada uma reconsulta a ADS antes de gravar).
+  const hours = adsHoursState(await getStockSettings(sql));
+  if (!hours.open) return { processed, auto: { ran: false, reason: hours.reason } };
   const [{ due }] = await sql.query<{ due: number }>(`SELECT count(*)::int AS due FROM stock_sync_jobs WHERE status IN ('QUEUED', 'RUNNING')`);
   if (due > 0) processed = await processStockJobs(sql, { deadline });
   const auto = timeLeft(deadline) > 15_000 ? await runAutoStockSync(sql, { deadline }) : { ran: false, reason: "Sem tempo neste ciclo" };

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HHMM } from "@/lib/ads/hours";
 import { adminHandler } from "@/lib/api";
 import { getAdminSession } from "@/lib/auth/admin";
 import { jsonNoStore } from "@/lib/http";
@@ -22,6 +23,8 @@ const body = z
     autoSyncEnabled: z.boolean().optional(),
     autoSyncIntervalMin: z.number().int().min(15).max(1440).optional(),
     autoSyncScope: z.enum(["ALL_LINKED", "APPROVED_GROUPS"]).optional(),
+    adsHoursStart: z.string().regex(HHMM, "Use o formato HH:MM").nullable().optional(),
+    adsHoursEnd: z.string().regex(HHMM, "Use o formato HH:MM").nullable().optional(),
     maxStockAgeMinutes: z.number().int().min(1).max(240).optional(),
     defaultSafetyReserve: z.number().int().min(0).max(100_000).optional(),
     branchIds: z.array(z.string().trim().min(1).max(20)).max(50).nullable().optional(),

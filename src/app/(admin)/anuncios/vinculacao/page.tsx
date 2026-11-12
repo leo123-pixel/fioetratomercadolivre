@@ -1,3 +1,4 @@
+import { adsHoursLabel, adsHoursState } from "@/lib/ads/hours";
 import { requireAdminPage } from "@/lib/auth/page-guard";
 import { formatDateTime } from "@/lib/format";
 import { logger } from "@/lib/logger";
@@ -54,6 +55,7 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
   const last = discovery[0];
   const auto = autoSyncState(settings);
   const priceAuto = autoPriceState(priceSettings);
+  const adsHours = { ...adsHoursState(settings), label: adsHoursLabel(settings) };
   return (
     <>
       <p className="breadcrumb">
@@ -64,6 +66,7 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
         <span className="muted">
           Última leitura da conta: {last ? `${formatDateTime(last.updatedAt)} (${last.value.listed ?? 0} anúncios${last.value.complete === false ? ", parcial" : ""})` : "nunca"} · automação:{" "}
           estoque {auto.active ? "ativo" : "desligado"}, preço {priceAuto.active ? "ativo" : "desligado"}
+          {(auto.active || priceAuto.active) && !adsHours.open ? " (em pausa: fora do horário da ADS)" : ""}
         </span>
       </div>
       <div className="alert info">
@@ -93,6 +96,7 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
         envAutoSyncAllowed={envAutoSyncAllowed()}
         autoSync={auto}
         price={{ settings: JSON.parse(JSON.stringify(priceSettings)), autoSync: priceAuto }}
+        adsHours={adsHours}
       />
     </>
   );

@@ -9,7 +9,8 @@ import { MeliHttpError, meliRequest } from "../meli/api";
 import { randomUUID } from "node:crypto";
 import { acquireLease, releaseLease } from "../imports/jobs";
 import type { Sql } from "../sql";
-import { envAutoSyncAllowed, recordHistory, StockSyncError } from "./settings";
+import { envAutoSyncAllowed, getStockSettings, recordHistory, StockSyncError } from "./settings";
+import { adsHoursState } from "../ads/hours";
 
 /**
  * Sincronização de PREÇO ADS → Mercado Livre para anúncios legados (criados fora do integrador) já vinculados
@@ -704,6 +705,9 @@ export async function runAutoPriceSync(sql: Sql, opts: { deadline?: number; forc
   const settings = await getPriceSettings(sql);
   const state = autoPriceState(settings);
   if (!state.active) return { ran: false, reason: state.reason };
+  // Mesmo horário de funcionamento da ADS configurado para o estoque.
+  const hours = adsHoursState(await getStockSettings(sql));
+  if (!hours.open) return { ran: false, reason: hours.reason };
   const owner = randomUUID();
   if (!(await acquireLease(sql, owner, "price-auto-sync"))) return { ran: false, reason: "Outra execução em andamento" };
   try {

@@ -9,6 +9,8 @@ interface Settings {
   autoSyncEnabled: boolean;
   autoSyncIntervalMin: number;
   autoSyncScope: "ALL_LINKED" | "APPROVED_GROUPS";
+  adsHoursStart: string | null;
+  adsHoursEnd: string | null;
   maxStockAgeMinutes: number;
   defaultSafetyReserve: number;
   branchIds: string[] | null;
@@ -26,11 +28,18 @@ interface PriceAuto {
   autoSync: { active: boolean; reason: string | null };
 }
 
-export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: boolean; autoSync: { active: boolean; reason: string | null }; price: PriceAuto }) {
+export function SettingsPanel(props: {
+  settings: Settings;
+  envAutoSyncAllowed: boolean;
+  autoSync: { active: boolean; reason: string | null };
+  price: PriceAuto;
+  adsHours: { open: boolean; reason: string | null; label: string };
+}) {
   const router = useRouter();
   const s = props.settings;
   const ps = props.price.settings;
   const [priceInterval, setPriceInterval] = useState(String(ps.autoSyncIntervalMin));
+  const [hours, setHours] = useState({ start: s.adsHoursStart ?? "", end: s.adsHoursEnd ?? "" });
   const [form, setForm] = useState({
     defaultSafetyReserve: String(s.defaultSafetyReserve),
     maxStockAgeMinutes: String(s.maxStockAgeMinutes),
@@ -114,6 +123,37 @@ export function SettingsPanel(props: { settings: Settings; envAutoSyncAllowed: b
           </span>
         )}
       </label>
+
+      <h3>Horário de funcionamento da ADS</h3>
+      <p className="muted">
+        A ADS desliga os servidores fora do expediente. Fora deste horário (horário de Campo Grande/MS) o estoque e o preço automáticos ficam em pausa e
+        retomam sozinhos quando a janela abre. Deixe os dois campos vazios para não limitar.
+      </p>
+      <ul className="muted">
+        <li>
+          Horário: {props.adsHours.label} — agora: {props.adsHours.open ? "dentro do horário" : "fora do horário (automação em pausa)"}
+        </li>
+      </ul>
+      <div className="form-grid">
+        <label>
+          ADS liga às
+          <input type="time" value={hours.start} onChange={(e) => setHours({ ...hours, start: e.target.value })} />
+        </label>
+        <label>
+          ADS desliga às
+          <input type="time" value={hours.end} onChange={(e) => setHours({ ...hours, end: e.target.value })} />
+        </label>
+      </div>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={busy}
+          onClick={() => patch({ adsHoursStart: hours.start || null, adsHoursEnd: hours.end || null }, "Horário da ADS salvo")}
+        >
+          Salvar horário
+        </button>
+      </div>
 
       <h3>Estoque automático</h3>
       <p className="muted">

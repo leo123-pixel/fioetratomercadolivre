@@ -9,6 +9,7 @@ import { POST as previewPost } from "@/app/api/stock-sync/preview/route";
 import { PATCH as settingsPatch } from "@/app/api/stock-sync/settings/route";
 import { POST as validatePost } from "@/app/api/stock-sync/validate/route";
 import { resetAdsThrottleForTests } from "@/lib/ads/client";
+import { setAdsClockForTesting } from "@/lib/ads/hours";
 import { runTick } from "@/lib/marketplace/scheduler";
 import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
@@ -702,6 +703,34 @@ describe("sincronização automática", () => {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }
   }, 20_000);
+
+  it("30c. fora do horário da ADS (depois das 18h em Campo Grande) a automação não consulta a ADS e retoma na janela", async () => {
+    const m = await setup([item("MLB1", { available_quantity: 25 })], [{ produtoId: 100, estoque: 8 }]);
+    const p = await product(100);
+    await discover();
+    await link("MLB1", p);
+    const sql = t.sql();
+    const patch = (body: unknown) => settingsPatch(makeRequest("/api/stock-sync/settings", { method: "PATCH", cookies: adminCookies(), headers: ORIGIN, body }));
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      await approve([(await preview()).proposals[0].id]);
+      await patch({ homologate: true });
+      await patch({ autoSyncEnabled: true });
+      expect((await patch({ adsHoursStart: "7h" })).status).toBe(400);
+      m.state.ads[0].estoque = 3;
+      setAdsClockForTesting(() => new Date("2026-11-12T22:30:00Z")); // 18:30 em Campo Grande
+      const adsCalls = () => (m.handler.mock.calls as [string | URL | Request][]).filter(([u]) => String(u instanceof Request ? u.url : u).includes("/estoques")).length;
+      const before = adsCalls();
+      expect(await runAutoStockSync(sql, { force: true })).toMatchObject({ ran: false, reason: expect.stringMatching(/Fora do horário da ADS/) });
+      expect(adsCalls()).toBe(before);
+      // Ajustar o horário (ex.: ADS até 19:00) reabre a janela.
+      expect((await patch({ adsHoursStart: "07:00", adsHoursEnd: "19:00" })).status).toBe(200);
+      expect(await runAutoStockSync(sql, { force: true })).toMatchObject({ ran: true, jobs: 1 });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(3);
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
+  });
 });
 
 describe("correspondência por código do fabricante", () => {
