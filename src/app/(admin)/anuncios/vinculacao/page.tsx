@@ -3,10 +3,12 @@ import { formatDateTime } from "@/lib/format";
 import { logger } from "@/lib/logger";
 import { getSql } from "@/lib/sql";
 import { LEGACY_FILTERS, listLegacyListings, type LegacyFilter } from "@/lib/stock/legacy";
+import { getPriceProposals, getPriceSettings, latestPriceRun, listPriceApplications } from "@/lib/stock/prices";
 import { getRunProposals, latestRun, listJobs } from "@/lib/stock/reconcile";
 import { autoSyncState, envAutoSyncAllowed, getStockSettings } from "@/lib/stock/settings";
 import { PageProblem } from "../../PageProblem";
 import { LinkingPanel } from "./LinkingPanel";
+import { PricePanel } from "./PricePanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { SyncPanel } from "./SyncPanel";
 
@@ -31,7 +33,7 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
   if ((await requireAdminPage("/anuncios/vinculacao")) === "config") return <PageProblem kind="config" />;
   const filter = (LEGACY_FILTERS as readonly string[]).includes(sp.filter ?? "") ? (sp.filter as LegacyFilter) : "unmapped";
   const page = Math.max(1, Number(sp.page) || 1);
-  let data, settings, run, proposals, jobs, discovery;
+  let data, settings, run, proposals, jobs, discovery, priceSettings, priceRun, priceProposals, priceApplied;
   try {
     const sql = getSql();
     settings = await getStockSettings(sql);
@@ -42,6 +44,8 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
       sql.query<{ value: { listed?: number; complete?: boolean }; updatedAt: Date }>(`SELECT value, updated_at AS "updatedAt" FROM app_settings WHERE key = 'legacy_discovery_last'`),
     ]);
     proposals = run ? await getRunProposals(sql, run.id) : [];
+    [priceSettings, priceRun, priceApplied] = await Promise.all([getPriceSettings(sql), latestPriceRun(sql), listPriceApplications(sql, 30)]);
+    priceProposals = priceRun ? await getPriceProposals(sql, priceRun.id) : [];
   } catch (err) {
     logger.error("Falha ao carregar a vinculação de anúncios", { err });
     return <PageProblem kind="database" />;
@@ -51,10 +55,10 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
   return (
     <>
       <p className="breadcrumb">
-        <a href="/anuncios">Anúncios</a> › Vinculação e estoque
+        <a href="/anuncios">Anúncios</a> › Vinculação, estoque e preço
       </p>
       <div className="page-head">
-        <h1>Vinculação de anúncios e estoque</h1>
+        <h1>Vinculação de anúncios, estoque e preço</h1>
         <span className="muted">
           Última leitura da conta: {last ? `${formatDateTime(last.updatedAt)} (${last.value.listed ?? 0} anúncios${last.value.complete === false ? ", parcial" : ""})` : "nunca"} · automação:{" "}
           {auto.active ? "ativa" : "desativada"}
@@ -62,7 +66,8 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
       </div>
       <div className="alert info">
         Vincule cada anúncio do Mercado Livre ao produto da ADS. Sugestões vêm de SKU, GTIN ou código do fabricante — nunca do título — e só valem depois da sua
-        confirmação. A única alteração feita no Mercado Livre é a <strong>quantidade</strong>, e somente depois de simular, validar e confirmar.
+        confirmação. As alterações feitas no Mercado Livre são a <strong>quantidade</strong> e, nos anúncios legados, o <strong>preço</strong> (tabela da ADS), sempre
+        depois de simular e confirmar.
       </div>
       <LinkingPanel
         filter={filter}
@@ -75,6 +80,12 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
         pageSize={data.pageSize}
       />
       <SyncPanel run={run ? JSON.parse(JSON.stringify(run)) : null} proposals={JSON.parse(JSON.stringify(proposals))} jobs={JSON.parse(JSON.stringify(jobs))} stockSourceConfirmed={settings.stockSourceConfirmed} />
+      <PricePanel
+        run={priceRun ? JSON.parse(JSON.stringify(priceRun)) : null}
+        proposals={JSON.parse(JSON.stringify(priceProposals))}
+        applied={JSON.parse(JSON.stringify(priceApplied))}
+        settings={priceSettings}
+      />
       <SettingsPanel settings={JSON.parse(JSON.stringify(settings))} envAutoSyncAllowed={envAutoSyncAllowed()} autoSync={auto} />
     </>
   );

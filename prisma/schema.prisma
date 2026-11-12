@@ -1070,3 +1070,63 @@ model StockSyncHistory {
   @@index([marketplaceItemId, createdAt(sort: Desc)], map: "stock_sync_history_item_idx")
   @@map("stock_sync_history")
 }
+
+// Migration 20261112000000_legacy_price_sync (CHECKs e índice parcial na SQL).
+
+/// Simulação de preço ADS (tabela configurada) × Mercado Livre. Somente leitura.
+model PriceSyncRun {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestedBy    String    @map("requested_by")
+  priceTableCode String    @map("price_table_code")
+  branchId       String?   @map("branch_id")
+  status         String    @default("RUNNING")
+  summary        Json?
+  errorMessage   String?   @map("error_message")
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  proposals PriceSyncProposal[]
+
+  @@index([startedAt(sort: Desc)], map: "price_sync_runs_started_idx")
+  @@map("price_sync_runs")
+}
+
+/// Uma proposta por anúncio do ML. PROPOSED | IN_SYNC | INELIGIBLE | APPLYING | APPLIED | DIVERGED | FAILED | STALE
+model PriceSyncProposal {
+  id                BigInt    @id @default(autoincrement())
+  runId             String    @map("run_id") @db.Uuid
+  marketplaceItemId String    @map("marketplace_item_id")
+  title             String?
+  variationIds      String[]  @default([]) @map("variation_ids")
+  productIds        Int[]     @default([]) @map("product_ids")
+  adsProductIds     Int[]     @default([]) @map("ads_product_ids")
+  priceTableCode    String    @map("price_table_code")
+  branchId          String?   @map("branch_id")
+  adsPrice          Decimal?  @map("ads_price") @db.Decimal(14, 2)
+  adsUpdatedAt      DateTime? @map("ads_updated_at") @db.Timestamptz(3)
+  marketplaceStatus String?   @map("marketplace_status")
+  marketplacePrice  Decimal?  @map("marketplace_price") @db.Decimal(14, 2)
+  proposedPrice     Decimal?  @map("proposed_price") @db.Decimal(14, 2)
+  difference        Decimal?  @db.Decimal(14, 2)
+  changePct         Decimal?  @map("change_pct") @db.Decimal(9, 2)
+  largeChange       Boolean   @default(false) @map("large_change")
+  eligible          Boolean
+  reasonCode        String?   @map("reason_code")
+  reason            String?
+  status            String
+  appliedBy         String?   @map("applied_by")
+  appliedAt         DateTime? @map("applied_at") @db.Timestamptz(3)
+  appliedPrice      Decimal?  @map("applied_price") @db.Decimal(14, 2)
+  httpStatus        Int?      @map("http_status")
+  request           Json?
+  response          Json?
+  errorMessage      String?   @map("error_message")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  run PriceSyncRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId], map: "price_sync_proposals_run_idx")
+  @@index([marketplaceItemId, createdAt(sort: Desc)], map: "price_sync_proposals_item_idx")
+  @@map("price_sync_proposals")
+}
