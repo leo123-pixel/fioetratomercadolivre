@@ -5,7 +5,7 @@ import "./globals.css";
 
 /** Área administrativa do integrador. As páginas continuam protegidas individualmente (requireAdminPage). */
 export const metadata: Metadata = {
-  title: "Fio & Trato · Integrador ADS ↔ Mercado Livre",
+  title: "Área Administrativa – Lopes Cosméticos",
   robots: { index: false, follow: false, nocache: true },
 };
 
@@ -23,10 +23,17 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <>
       <header className="topbar">
-        <span className="brand">Fio &amp; Trato</span>
-        <span className="brand-sub">Integrador ADS ↔ Mercado Livre</span>
+        <a className="brand-link" href={loggedIn ? "/painel" : "/login"}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="brand-logo" src="/brand/lopes-logo-light.png" alt="" width={44} height={33} />
+          <span className="brand-text">
+            <span className="brand">Área Administrativa – Lopes Cosméticos</span>
+            <span className="brand-sub">Acesso somente para pessoas autorizadas</span>
+          </span>
+        </a>
         {loggedIn && (
           <nav className="nav" aria-label="Principal">
+            <a href="/painel">Painel</a>
             <a href="/produtos">Produtos</a>
             <a href="/anuncios">Anúncios</a>
             <a href="/pedidos">Pedidos</a>

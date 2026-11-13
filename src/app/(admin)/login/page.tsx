@@ -6,13 +6,13 @@ export const dynamic = "force-dynamic";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
   const { next } = await searchParams;
-  const target = safeNextPath(next, "/configuracoes/integracoes/mercadolivre");
+  const target = safeNextPath(next, "/painel");
   if (await getServerAdminSession()) redirect(target);
 
   return (
     <section className="card login-card">
-      <h2>Acesso do administrador</h2>
-      <p className="muted">Área restrita à configuração do integrador.</p>
+      <h2>Área Administrativa</h2>
+      <p className="muted">Lopes Cosméticos · acesso somente para pessoas autorizadas.</p>
       <LoginForm next={target} />
     </section>
   );
