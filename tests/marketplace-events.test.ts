@@ -9,7 +9,7 @@ import { POST as tickRoute } from "@/app/api/marketplace/scheduler/tick/route";
 import { POST as syncJobsRoute } from "@/app/api/marketplace/sync-jobs/route";
 import { claimNextEvent, ingestNotification, processEvents, reprocessEvent, setEventHandlersForTesting } from "@/lib/marketplace/events";
 import { recoverMissedFeeds } from "@/lib/marketplace/missed-feeds";
-import { runSyncJob, runTick, schedulerToken, setTickRunnerForTesting } from "@/lib/marketplace/scheduler";
+import { runSyncJob, runTick, schedulerToken, setTickRunnerForTesting, TICK_BUDGET_MS } from "@/lib/marketplace/scheduler";
 import { setWebhookProcessorForTesting } from "@/lib/marketplace/webhook";
 import { syncAllListings, syncItemDetailed } from "@/lib/publish/listings";
 import type { Sql } from "@/lib/sql";
@@ -442,7 +442,7 @@ describe("gestão de anúncios: reconciliação periódica (somente leitura)", (
     vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
     setEventHandlersForTesting({
       orders_v2: async () => {
-        offset += 40_000; // um evento "lento" consome quase todo o orçamento
+        offset += TICK_BUDGET_MS - 5_000; // um evento "lento" consome quase todo o orçamento
         return { outcome: "completed" };
       },
     });

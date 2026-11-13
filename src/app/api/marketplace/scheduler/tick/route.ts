@@ -6,7 +6,8 @@ import { scheduleTick, verifySchedulerToken, type Trigger } from "@/lib/marketpl
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Plano pago da Vercel: até 300 s por execução; o tick usa ~4 min (ver TICK_BUDGET_MS) e roda a cada 5 min.
+export const maxDuration = 300;
 
 function cronAuthorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET?.trim();

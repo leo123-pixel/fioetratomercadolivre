@@ -15,7 +15,7 @@ import { discoverLegacyListings } from "@/lib/stock/legacy";
 import { confirmLink } from "@/lib/stock/links";
 import { resetMultigetFallback } from "@/lib/meli/items";
 import { isValidGtin } from "@/lib/stock/matching";
-import { processStockJobs, runAutoStockSync, runPreview, validateProposals, applyProposals, type ProposalView } from "@/lib/stock/reconcile";
+import { processStockJobs, runAutoStockSync, runPreview, runStockSyncTick, validateProposals, applyProposals, type ProposalView } from "@/lib/stock/reconcile";
 import { updateGroupPolicy, updateStockSettings } from "@/lib/stock/settings";
 import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
@@ -731,6 +731,58 @@ describe("sincronização automática", () => {
       delete process.env.STOCK_AUTO_SYNC_ENABLED;
     }
   });
+
+  it("30d. fila da automação não trava o anúncio: sem tempo não cria job, fila velha expira e a aprovação manual substitui", async () => {
+    const m = await setup([item("MLB1", { available_quantity: 25 })], [{ produtoId: 100, estoque: 8 }]);
+    const p = await product(100);
+    await discover();
+    await link("MLB1", p);
+    const sql = t.sql();
+    const patch = (body: unknown) => settingsPatch(makeRequest("/api/stock-sync/settings", { method: "PATCH", cookies: adminCookies(), headers: ORIGIN, body }));
+    process.env.STOCK_AUTO_SYNC_ENABLED = "true";
+    try {
+      await approve([(await preview()).proposals[0].id]);
+      await patch({ homologate: true });
+      await patch({ autoSyncEnabled: true });
+      // Pouco tempo no ciclo: confere, mas não deixa job na fila; o estoque volta no próximo tick.
+      m.state.ads[0].estoque = 5;
+      expect(await runAutoStockSync(sql, { deadline: Date.now() + 11_000 })).toMatchObject({ ran: true, jobs: 0 });
+      const [{ queued }] = await sql.query<{ queued: number }>(`SELECT count(*)::int AS queued FROM stock_sync_jobs WHERE status = 'QUEUED'`);
+      expect(queued).toBe(0);
+      expect(await runAutoStockSync(sql)).toMatchObject({ ran: true, jobs: 1 });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(5);
+
+      // Job automático parado na fila (de antes desta correção): a aprovação manual o substitui.
+      const poolKey = (await preview()).proposals[0].poolKey;
+      await sql.execute(
+        `INSERT INTO stock_sync_jobs (pool_key, sync_mode, authorized_by, idempotency_key, target_quantity, next_run_at)
+         VALUES ($1::text, 'AUTO', 'system:auto', 'auto:velho', 1, now() + interval '1 hour')`,
+        [poolKey],
+      );
+      m.state.ads[0].estoque = 7;
+      const prop = (await preview()).proposals[0];
+      const v = await validateProposals(sql, [prop.id]);
+      expect(v.items[0]).toMatchObject({ ok: true });
+      const out = await applyProposals(sql, { proposalIds: [prop.id], confirmationToken: v.confirmationToken!, actor: ACTOR });
+      expect(out.jobs[0]).toMatchObject({ status: "SUCCEEDED" });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(7);
+      const [old] = await sql.query<{ status: string; code: string }>(`SELECT status, error_code AS code FROM stock_sync_jobs WHERE idempotency_key = 'auto:velho'`);
+      expect(old).toEqual({ status: "SKIPPED", code: "SUPERSEDED_BY_MANUAL" });
+
+      // Job automático que nunca rodou e passou do intervalo expira no tick (não segura o anúncio para sempre).
+      await sql.execute(
+        `INSERT INTO stock_sync_jobs (pool_key, sync_mode, authorized_by, idempotency_key, target_quantity, next_run_at, created_at)
+         VALUES ($1::text, 'AUTO', 'system:auto', 'auto:antigo', 1, now() + interval '1 hour', now() - interval '2 hours')`,
+        [poolKey],
+      );
+      await runStockSyncTick(sql, Date.now() + 40_000);
+      const [exp] = await sql.query<{ status: string; code: string }>(`SELECT status, error_code AS code FROM stock_sync_jobs WHERE idempotency_key = 'auto:antigo'`);
+      expect(exp).toEqual({ status: "STALE", code: "EXPIRED" });
+      expect(m.state.items.get("MLB1")!.available_quantity).toBe(7);
+    } finally {
+      delete process.env.STOCK_AUTO_SYNC_ENABLED;
+    }
+  }, 20_000);
 });
 
 describe("correspondência por código do fabricante", () => {

@@ -78,9 +78,14 @@ export interface SyncJobResult {
 }
 
 /** Executa uma rotina periódica registrando-a em marketplace_sync_jobs (com lease contra execuções simultâneas). */
-/** Tempo máximo de trabalho de uma execução (a função tem limite de 60 s na Vercel). */
+/** Tempo máximo de trabalho de uma rotina disparada manualmente (as rotas manuais têm limite de 60 s). */
 export const JOB_BUDGET_MS = 40_000;
-export const TICK_BUDGET_MS = 45_000;
+/** Tick: a rota tem até 300 s (plano pago); 4 min de trabalho deixam folga e não sobrepõem o próximo tick (5 min). */
+export const TICK_BUDGET_MS = 240_000;
+/** Cada rotina periódica (pedidos, reconciliação, feeds perdidos) usa no máximo isto do tick. */
+const TICK_JOB_BUDGET_MS = 60_000;
+/** Reservado ao preço automático no fim do tick, quando ligado. */
+const PRICE_RESERVE_MS = 60_000;
 
 export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger, opts: { deadline?: number } = {}): Promise<SyncJobResult> {
   const deadline = opts.deadline ?? Date.now() + JOB_BUDGET_MS;
@@ -164,23 +169,31 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
   const left = () => deadline - Date.now();
   await ensureSchedulerRegistration(sql).catch((err) => logger.warn("Falha ao registrar o agendador", { err }));
   // Um evento pode levar alguns segundos (pedido + envio): o orçamento é checado antes de cada um.
-  const events = await processEvents({ sql, budgetMs: 15_000 });
+  // 10 s para a fila primeiro; o que sobrar do ciclo volta para ela no fim (depois de estoque e preço).
+  const events = await processEvents({ sql, budgetMs: 10_000 });
   const jobs: SyncJobResult[] = [];
   // Sem conta conectada as rotinas não têm o que consultar; os eventos continuam guardados.
   const conn = await getStore().getCurrentConnection();
   const connected = conn?.status === "ACTIVE" && !!conn.refreshTokenEnc;
   for (const type of ["ORDERS_RECOVERY", "LISTINGS_RECONCILE", "MISSED_FEEDS"] as SyncJobType[]) {
     if (left() < 12_000) break;
-    if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger, { deadline }));
+    if (connected && (await isDue(sql, type))) jobs.push(await runSyncJob(sql, type, trigger, { deadline: Math.min(deadline, Date.now() + TICK_JOB_BUDGET_MS) }));
   }
   // Estoque: retentativas de atualizações já autorizadas e a automação (desligada por padrão; ver src/lib/stock).
-  // O estoque recebe o tempo menos ~15 s, reservados ao preço quando a automação de preço está ligada.
+  // O estoque recebe o tempo menos a reserva do preço (quando a automação de preço está ligada); se o estoque
+  // terminar antes, o preço aproveita o resto.
   if (connected && left() > 15_000) {
     const priceAuto = autoPriceState(await getPriceSettings(sql)).active;
-    const stockDeadline = priceAuto ? deadline - 15_000 : deadline;
+    const reserve = Math.min(PRICE_RESERVE_MS, Math.floor(TICK_BUDGET_MS / 3));
+    const stockDeadline = priceAuto ? deadline - reserve : deadline;
     await runStockSyncTick(sql, stockDeadline).catch((err) => logger.error("Falha na sincronização de estoque", { err }));
-    if (priceAuto && left() > 14_000) {
-      await runAutoPriceSync(sql, { deadline }).catch((err) => logger.error("Falha na sincronização automática de preço", { err }));
+    // Várias rodadas de preço enquanto houver tempo (cada uma confere um lote; para quando tudo foi conferido).
+    for (let round = 0; priceAuto && round < 8 && left() > 14_000; round++) {
+      const r = await runAutoPriceSync(sql, { deadline }).catch((err) => {
+        logger.error("Falha na sincronização automática de preço", { err });
+        return null;
+      });
+      if (!r?.ran) break;
     }
   }
   // O tempo que sobrar vai para a fila (inclui eventos gerados pelas rotinas, como pedidos recuperados).

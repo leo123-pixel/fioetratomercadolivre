@@ -667,7 +667,11 @@ export async function validateProposals(
   if (toCheck.length) {
     const active = new Set(
       (
-        await sql.query<{ poolKey: string }>(`SELECT pool_key AS "poolKey" FROM stock_sync_jobs WHERE status IN ('QUEUED', 'RUNNING') AND pool_key = ANY($1::text[])`, [
+        // Uma atualização automática ainda na fila não bloqueia: a aprovação manual a substitui (ver applyProposals).
+        await sql.query<{ poolKey: string }>(
+          `SELECT pool_key AS "poolKey" FROM stock_sync_jobs
+           WHERE (status = 'RUNNING' OR (status = 'QUEUED' AND sync_mode = 'MANUAL')) AND pool_key = ANY($1::text[])`,
+          [
           toCheck.map((t) => t.pool.key),
         ])
       ).map((r) => r.poolKey),
@@ -802,6 +806,18 @@ export async function applyProposals(
       skipped.push({ proposalId: id, reason: "Proposta não está mais aberta ou mudou" });
       continue;
     }
+    // A aprovação manual (com ADS e ML recém-consultados) substitui uma atualização automática que ainda espera na fila.
+    const superseded = await sql.query<{ id: string; proposalId: string | null }>(
+      `UPDATE stock_sync_jobs SET status = 'SKIPPED', error_code = 'SUPERSEDED_BY_MANUAL', error_message = 'Substituída pela aprovação manual',
+         completed_at = now(), locked_until = NULL, updated_at = now()
+       WHERE pool_key = $1::text AND status = 'QUEUED' AND sync_mode = 'AUTO'
+       RETURNING id::text AS id, proposal_id::text AS "proposalId"`,
+      [prop.poolKey],
+    );
+    for (const s of superseded) {
+      if (s.proposalId) await sql.execute(`UPDATE stock_sync_proposals SET status = 'SUPERSEDED' WHERE id = $1::bigint`, [s.proposalId]);
+      await recordHistory(sql, { type: "sync_superseded", actor: input.actor, jobId: s.id, details: { poolKey: prop.poolKey, byProposalId: id } });
+    }
     try {
       const [job] = await sql.query<{ id: string }>(
         `INSERT INTO stock_sync_jobs (proposal_id, pool_key, sync_mode, authorized_by, idempotency_key, stock_model, target_quantity)
@@ -876,13 +892,14 @@ async function finishJob(
   }
 }
 
-async function requeue(sql: Sql, job: ClaimedJob, code: string, message: string, retryAfterMs?: number): Promise<boolean> {
-  if (job.attempts >= job.maxAttempts) return false;
-  const wait = backoffMs(job.attempts, retryAfterMs);
+async function requeue(sql: Sql, job: ClaimedJob, code: string, message: string, retryAfterMs?: number, opts: { free?: boolean } = {}): Promise<boolean> {
+  // free: adiado por falta de tempo no ciclo (nada foi enviado) — não gasta tentativa.
+  if (!opts.free && job.attempts >= job.maxAttempts) return false;
+  const wait = opts.free ? (retryAfterMs ?? 0) : backoffMs(job.attempts, retryAfterMs);
   await sql.execute(
     `UPDATE stock_sync_jobs SET status = 'QUEUED', next_run_at = now() + make_interval(secs => $2::int), locked_until = NULL, error_code = $3::text,
-       error_message = $4::text, updated_at = now() WHERE id = $1::uuid`,
-    [job.id, Math.ceil(wait / 1000), code, message],
+       error_message = $4::text, attempts = GREATEST(attempts - $5::int, 0), updated_at = now() WHERE id = $1::uuid`,
+    [job.id, Math.ceil(wait / 1000), code, message, opts.free ? 1 : 0],
   );
   return true;
 }
@@ -949,7 +966,7 @@ async function runJob(sql: Sql, job: ClaimedJob, deadline?: number): Promise<voi
       return finishJob(sql, job, { status: "SUCCEEDED", model: state.model, before, applied: before, statusBefore: statusText(state), statusAfter: statusText(state), code: "ALREADY_IN_SYNC" });
     }
     if (timeLeft(deadline) < 6_000) {
-      await requeue(sql, job, "DEADLINE", "Sem tempo nesta execução; continua no próximo ciclo", 30_000);
+      await requeue(sql, job, "DEADLINE", "Sem tempo nesta execução; continua no próximo ciclo", 30_000, { free: true });
       return;
     }
     const call = buildWrite(pool, state, job.targetQuantity);
@@ -1051,6 +1068,8 @@ export interface AutoResult {
 
 /** Estoques conferidos por tick da automação (o tick tem ~45 s e o ML pode exigir leitura anúncio a anúncio). */
 const AUTO_POOLS_PER_TICK = 60;
+/** Tempo mínimo para começar uma atualização automática (reler ADS e ML, gravar e conferir). */
+const AUTO_JOB_MIN_LEFT_MS = 12_000;
 
 export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; force?: boolean } = {}): Promise<AutoResult> {
   const settings = await getStockSettings(sql);
@@ -1095,7 +1114,10 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
     const preview = await runPreview(sql, { requestedBy: "system:auto", mode: "AUTO", poolKeys: pools.map((p) => p.key), deadline: opts.deadline });
     const eligible = preview.proposals.filter((p) => p.status === "PROPOSED").slice(0, settings.maxJobsPerRun);
     const jobIds: string[] = [];
+    // Cria e grava uma atualização por vez, só enquanto houver tempo no ciclo. As que não couberem continuam PROPOSED
+    // e voltam no próximo tick com ADS e ML relidos — sem formar fila de jobs com quantidade antiga que travaria o anúncio.
     for (const p of eligible) {
+      if (timeLeft(opts.deadline) < AUTO_JOB_MIN_LEFT_MS) break;
       await sql.execute(`UPDATE stock_sync_proposals SET status = 'APPROVED', approved_by = 'system:auto', approved_at = now() WHERE id = $1::bigint AND status = 'PROPOSED'`, [p.id]);
       try {
         const [job] = await sql.query<{ id: string }>(
@@ -1103,13 +1125,15 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
            VALUES ($1::bigint, $2::text, 'AUTO', 'system:auto', $3::text, $4::text, $5::int) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text AS id`,
           [p.id, p.poolKey, `auto:${p.id}`, p.stockModel, p.proposedQuantity],
         );
-        if (job) jobIds.push(job.id);
+        if (job) {
+          jobIds.push(job.id);
+          await processStockJobs(sql, { jobIds: [job.id], deadline: opts.deadline });
+        }
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
         await sql.execute(`UPDATE stock_sync_proposals SET status = 'SKIPPED', reason = 'Atualização já em andamento' WHERE id = $1::bigint`, [p.id]);
       }
     }
-    if (jobIds.length) await processStockJobs(sql, { jobIds, deadline: opts.deadline });
     return { ran: true, reason: null, runId: preview.runId, jobs: jobIds.length };
   } finally {
     await releaseLease(sql, owner, "stock-auto-sync").catch(() => undefined);
@@ -1120,10 +1144,29 @@ export async function runAutoStockSync(sql: Sql, opts: { deadline?: number; forc
 export async function runStockSyncTick(sql: Sql, deadline: number): Promise<{ processed: number; auto: AutoResult }> {
   let processed = 0;
   // Fora do expediente da ADS as retentativas também esperam (cada uma reconsulta a ADS antes de gravar).
-  const hours = adsHoursState(await getStockSettings(sql));
+  const settings = await getStockSettings(sql);
+  const hours = adsHoursState(settings);
   if (!hours.open) return { processed, auto: { ran: false, reason: hours.reason } };
+  // Atualização automática que nunca chegou a rodar e já passou do intervalo: a quantidade dela é velha. Descarta;
+  // o rodízio confere o estoque de novo com ADS e ML atuais.
+  const expired = await sql.query<{ proposalId: string | null }>(
+    `UPDATE stock_sync_jobs SET status = 'STALE', error_code = 'EXPIRED', error_message = 'Ficou na fila além do intervalo da automação; será conferido de novo',
+       completed_at = now(), locked_until = NULL, updated_at = now()
+     WHERE status = 'QUEUED' AND sync_mode = 'AUTO' AND started_at IS NULL AND created_at < now() - make_interval(mins => $1::int)
+     RETURNING proposal_id::text AS "proposalId"`,
+    [settings.autoSyncIntervalMin],
+  );
+  const expiredProposals = expired.map((e) => e.proposalId).filter((x): x is string => !!x);
+  if (expiredProposals.length) await sql.execute(`UPDATE stock_sync_proposals SET status = 'STALE' WHERE id = ANY($1::bigint[])`, [expiredProposals]);
   const [{ due }] = await sql.query<{ due: number }>(`SELECT count(*)::int AS due FROM stock_sync_jobs WHERE status IN ('QUEUED', 'RUNNING')`);
   if (due > 0) processed = await processStockJobs(sql, { deadline });
-  const auto = timeLeft(deadline) > 15_000 ? await runAutoStockSync(sql, { deadline }) : { ran: false, reason: "Sem tempo neste ciclo" };
+  // Várias rodadas enquanto houver tempo: cada uma confere um lote do rodízio; para quando todos foram conferidos
+  // no intervalo, quando a ADS cai ou quando o tempo acaba.
+  let auto: AutoResult = { ran: false, reason: "Sem tempo neste ciclo" };
+  for (let round = 0; round < 8 && timeLeft(deadline) > 15_000; round++) {
+    const r = await runAutoStockSync(sql, { deadline });
+    if (round === 0 || r.ran) auto = r;
+    if (!r.ran) break;
+  }
   return { processed, auto };
 }
