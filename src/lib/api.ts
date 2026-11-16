@@ -15,6 +15,7 @@ import { MeliAuthError } from "./meli/tokens";
 import { rateLimit } from "./rate-limit";
 import { StorageError } from "./storage/supabase";
 import { StockSyncError } from "./stock/settings";
+import { InventoryError } from "./inventory/mode";
 
 /** Contexto das rotas dinâmicas do App Router (ex.: { params: Promise<{ id: string }> }). */
 export type RouteContext<P extends Record<string, string> = Record<string, string>> = { params: Promise<P> };
@@ -58,6 +59,7 @@ export function adminHandler<C = unknown>(handler: (req: NextRequest, ctx: C) =>
       if (err instanceof SubmissionError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, 409);
       if (err instanceof CustomerError) return jsonNoStore({ error: err.code, message: err.message }, 409);
       if (err instanceof StockSyncError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
+      if (err instanceof InventoryError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
       if (err instanceof MappingError) return jsonNoStore({ error: err.code, message: err.message }, 409);
       if (err instanceof SettingsError) return jsonNoStore({ error: "invalid_settings", message: "Configuração inválida", issues: err.issues.map((i) => ({ path: i.field, message: i.message })) }, 422);
       if (err instanceof AdsApiError) return jsonNoStore({ error: "ads_error", kind: err.kind, message: err.message }, 502);

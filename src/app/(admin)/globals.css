@@ -330,3 +330,15 @@ details.raw pre { max-height: 320px; overflow: auto; background: var(--bg); padd
   .dash-bar-x { font-size: 0.65rem; }
   .brand { font-size: 0.95rem; }
 }
+/* ---------------------------------------------------------------- Estoque central (Inventory Core) */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tabs a { padding: 8px 12px; border-radius: 8px 8px 0 0; color: var(--muted); font-weight: 600; text-decoration: none; border: 1px solid transparent; border-bottom: 0; margin-bottom: -1px; }
+.tabs a[aria-current="page"] { color: var(--text); background: var(--surface); border-color: var(--border); }
+/* Valores simulados nunca se parecem com valores publicados: borda tracejada e rótulo. */
+.sim { display: inline-block; padding: 1px 6px; border: 1px dashed var(--warn-fg); border-radius: 6px; color: var(--warn-fg); font-variant-numeric: tabular-nums; }
+th .sim, .sim-label { font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.real-label { font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--success-fg); }
+table.data td .reasons { margin: 2px 0 0; padding-left: 16px; color: var(--muted); font-size: 0.78rem; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.inline-form .field { min-width: 120px; }
+.chip.wrap { white-space: normal; text-align: left; }

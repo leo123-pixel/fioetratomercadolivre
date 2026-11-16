@@ -37,6 +37,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <a href="/produtos">Produtos</a>
             <a href="/anuncios">Anúncios</a>
             <a href="/pedidos">Pedidos</a>
+            <a href="/estoque/controle-central">Estoque central</a>
             <a href="/importacoes">Importações</a>
             <a href="/configuracoes/tabelas-de-preco">Tabelas de preço</a>
             <a href="/configuracoes/integracoes/mercadolivre">Mercado Livre</a>
