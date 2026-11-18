@@ -25,6 +25,8 @@ export interface PositionRow {
   mlConfirmed: number | null;
   mlStatus: string | null;
   nsDesired: number | null;
+  /** Quantidade observada na Nuvemshop (leitura do catálogo importado; null sem loja ou desconhecida). */
+  nsObserved: number | null;
   nsStatus: string | null;
   unallocated: number | null;
   difference: number | null;
@@ -54,7 +56,7 @@ export async function listPositions(
             trim_scale(ip.pending_commitments)::text AS "pendingCommitments", ip.safety_reserve AS "safetyReserve", ip.safe_sellable AS "safeSellable",
             ip.reliability, ip.reliability_reasons AS reasons,
             ml.desired_quantity AS "mlDesired", ml.confirmed_quantity AS "mlConfirmed", ml.status AS "mlStatus",
-            ns.desired_quantity AS "nsDesired", ns.status AS "nsStatus",
+            ns.desired_quantity AS "nsDesired", ns.confirmed_quantity AS "nsObserved", ns.status AS "nsStatus",
             CASE WHEN ip.safe_sellable IS NULL THEN NULL ELSE ip.safe_sellable - COALESCE(ml.desired_quantity, 0) - COALESCE(ns.desired_quantity, 0) END AS unallocated,
             CASE WHEN ml.desired_quantity IS NULL OR ml.confirmed_quantity IS NULL THEN NULL ELSE ml.desired_quantity - ml.confirmed_quantity END AS difference,
             ip.computed_at AS "computedAt",

@@ -31,6 +31,19 @@ export async function createTestDatabase(): Promise<{ db: PGlite; sql: Sql }> {
 }
 
 const TABLES = [
+  "nuvemshop_mapping_history",
+  "nuvemshop_mapping_components",
+  "nuvemshop_variant_mappings",
+  "nuvemshop_catalog_import_attempts",
+  "nuvemshop_catalog_import_jobs",
+  "nuvemshop_inventory_levels",
+  "nuvemshop_locations",
+  "nuvemshop_categories",
+  "nuvemshop_product_images",
+  "nuvemshop_variants",
+  "nuvemshop_products",
+  "nuvemshop_oauth_states",
+  "nuvemshop_stores",
   "inventory_audit_logs",
   "inventory_outbox_events",
   "inventory_sync_proposals",

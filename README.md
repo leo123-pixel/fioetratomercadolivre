@@ -4,6 +4,7 @@
 - **Fase 2 (esta versão):** catálogo da ADS: importação de produtos, tabelas comerciais, preços e estoque, imagens manuais e rascunhos de anúncio. Veja [Fase 2](#fase-2--catálogo-ads).
 - **Fase 3:** preparação, validação e publicação **manual** de anúncios no Mercado Livre. Veja [Fase 3](#fase-3--preparação-validação-e-publicação-manual-no-mercado-livre).
 - **Inventory Core — Fase 0 (modo sombra):** núcleo central de estoque multicanal em `/estoque/controle-central`, somente leitura/simulação. Veja [docs/inventory-core-fase0.md](docs/inventory-core-fase0.md).
+- **Nuvemshop — Fase 1 (somente leitura):** OAuth, importação de catálogo/variantes/estoque, vinculação com a ADS e leitura pelo Inventory Core em `/nuvemshop`. Veja [docs/nuvemshop-fase1.md](docs/nuvemshop-fase1.md).
 - **Fora do escopo por enquanto:** alteração automática de preço/estoque após a publicação, pedidos, mensagens e campanhas.
 
 Stack: Next.js 15 (App Router) · TypeScript · Prisma + PostgreSQL · Vercel · Vitest.

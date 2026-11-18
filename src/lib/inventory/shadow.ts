@@ -9,6 +9,7 @@ import type { Sql } from "../sql";
 import { pendingConsumption } from "../stock/reconcile";
 import { getStockSettings } from "../stock/settings";
 import { MercadoLivreInventoryAdapter } from "./adapters/mercadolivre";
+import { NuvemshopInventoryAdapter, nsExposure } from "./adapters/nuvemshop";
 import type { ChannelListingInventory } from "./adapters/types";
 import { distributeWithinChannel, planQuotas, type ChannelExposure, type QuotaPlan } from "./allocation";
 import { ensurePool, ensureSkus, lockPoolRow, type SkuRecord } from "./identity";
@@ -196,13 +197,19 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
   const ml = new MercadoLivreInventoryAdapter(sql);
   const listings = await ml.getChannelInventory();
   const mappings = await ml.getProductMappings();
+  // Nuvemshop (Fase 1): somente leitura do catálogo importado — quantidade observada por variante vinculada.
+  // A cota da Nuvemshop continua SIMULADA (não há caminho de escrita); o observado entra na exposição atual.
+  const nsAdapter = new NuvemshopInventoryAdapter(sql, settings.channelWarehouses.nuvemshop ?? "principal");
+  const nsState = await nsAdapter.state();
+  const nsListings = nsState.connected ? await nsAdapter.getChannelInventory() : [];
+  const nsMappings = nsState.connected ? await nsAdapter.getProductMappings() : [];
   const ingest = await ingestMercadoLivreOrders(sql, { settings, correlationId, now });
 
   // Escopo: produtos vinculados a anúncios, com pedidos, com política própria ou já conhecidos do núcleo.
   const known = await sql.query<{ productId: number; computedAt: Date | null }>(`SELECT product_id AS "productId", min(computed_at) AS "computedAt" FROM inventory_pools GROUP BY 1`);
   const policyProducts = await sql.query<{ productId: number }>(`SELECT product_id AS "productId" FROM inventory_allocation_policies WHERE active AND scope = 'PRODUCT'`);
   let productIds = [
-    ...new Set([...listings.flatMap((l) => l.components.map((c) => c.productId)), ...ingest.productIds, ...policyProducts.map((p) => p.productId), ...known.map((k) => k.productId)]),
+    ...new Set([...listings.flatMap((l) => l.components.map((c) => c.productId)), ...nsListings.flatMap((l) => l.components.map((c) => c.productId)), ...ingest.productIds, ...policyProducts.map((p) => p.productId), ...known.map((k) => k.productId)]),
   ];
   if (opts.productIds?.length) productIds = [...new Set(opts.productIds)];
   // Rodízio: os pools calculados há mais tempo primeiro (execução que estoura o prazo continua na próxima).
@@ -263,6 +270,9 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
   for (const m of mappings.filter((x) => x.problem)) {
     discrepancies.push({ fingerprint: `MAPPING_CONFLICT:${m.key}`, channel: "mercadolivre", type: "MAPPING_CONFLICT", severity: "WARNING", message: m.problem!, details: { key: m.key, itemIds: m.itemIds } });
   }
+  for (const m of nsMappings.filter((x) => x.problem)) {
+    discrepancies.push({ fingerprint: `MAPPING_REVIEW:${m.key}`, channel: "nuvemshop", type: "MAPPING_REVIEW", severity: "WARNING", message: m.problem!, details: { key: m.key, itemIds: m.itemIds } });
+  }
 
   const counters = { pools: 0, reliable: 0, degraded: 0, unknown: 0, blocked: 0, overExposed: 0, snapshotsAccepted: 0, snapshotsIgnoredStale: 0, quotaChanges: 0 };
   const mlQuota = new Map<number, number | null>();
@@ -278,7 +288,7 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
       const snap = snapshotFor(productId, branches, cache, live.get(productId));
       const pool = await ensurePool(sql, sku, w);
       const outcome = await withPoolLock(sql, pool.poolKey, (tx) =>
-        evaluatePool(tx, { runId, correlationId, now, sku, pool: pool.id, warehouse: w, channelsHere, branches, snap, settings, eff, listings, unmappedByItem, legacyPending: legacyPending.get(productId) ?? 0, legacyWindowDays: stockSettings.pendingOrderWindowDays }),
+        evaluatePool(tx, { runId, correlationId, now, sku, pool: pool.id, warehouse: w, channelsHere, branches, snap, settings, eff, listings, nsListings, nsConnected: nsState.connected, unmappedByItem, legacyPending: legacyPending.get(productId) ?? 0, legacyWindowDays: stockSettings.pendingOrderWindowDays }),
       );
       counters.pools++;
       counters[outcome.position.reliability === "RELIABLE" ? "reliable" : outcome.position.reliability === "DEGRADED" ? "degraded" : outcome.position.reliability === "UNKNOWN" ? "unknown" : "blocked"]++;
@@ -394,6 +404,9 @@ interface PoolContext {
   settings: InventorySettings;
   eff: { policy: StoredPolicy; safetyReserve: number };
   listings: ChannelListingInventory[];
+  /** Variantes Nuvemshop vinculadas (leitura do catálogo importado). */
+  nsListings: ChannelListingInventory[];
+  nsConnected: boolean;
   unmappedByItem: Map<string, number>;
   legacyPending: number;
   legacyWindowDays: number;
@@ -486,8 +499,16 @@ async function evaluatePool(tx: Sql, c: PoolContext): Promise<PoolOutcome> {
   });
 
   // 4. Cotas por canal (Mercado Livre real, Nuvemshop simulada).
+  // Nuvemshop conectada: a quantidade observada (leitura) conta como exposição atual; a cota segue simulada e
+  // inalcançável (sem escrita na Fase 1). Sem loja conectada: comportamento da fase 0 (nada anunciado).
+  const exposureNs = nsExposure(productId, c.nsListings);
+  const nsObserved = c.nsConnected ? (exposureNs.listings > 0 ? exposureNs.confirmed : 0) : null;
   const exposures: ChannelExposure[] = c.channelsHere.map((ch) =>
-    ch === "mercadolivre" ? { channel: ch, confirmed: exposureMl.confirmed, reachable: true, simulated: false } : { channel: ch, confirmed: 0, reachable: false, simulated: SIMULATED_CHANNELS.has(ch) },
+    ch === "mercadolivre"
+      ? { channel: ch, confirmed: exposureMl.confirmed, reachable: true, simulated: false }
+      : ch === "nuvemshop" && c.nsConnected
+        ? { channel: ch, confirmed: nsObserved, reachable: false, simulated: true }
+        : { channel: ch, confirmed: 0, reachable: false, simulated: SIMULATED_CHANNELS.has(ch) },
   );
   const rules = c.eff.policy.rules.filter((r) => c.channelsHere.includes(r.channel));
   const plan = planQuotas(position.safeSellable, { rules, remainderMode: c.eff.policy.remainderMode }, exposures, { allowIncrease: position.allowIncrease });
@@ -549,15 +570,27 @@ async function evaluatePool(tx: Sql, c: PoolContext): Promise<PoolOutcome> {
   if (c.snap.outside.length) {
     discrepancies.push({ ...where, fingerprint: `STOCK_IN_UNMAPPED_BRANCH:${row.id}`, type: "STOCK_IN_UNMAPPED_BRANCH", severity: "INFO", message: `${c.sku.skuCode} tem saldo em filial fora do depósito ${c.warehouse} (${c.snap.outside.join(", ")}): não somado`, details: { branches: c.snap.outside } });
   }
+  const nsCounted = c.channelsHere.includes("nuvemshop") && c.nsConnected && (nsObserved ?? 0) > 0;
   if (plan.overExposedBy > 0) {
     discrepancies.push({
       ...where,
-      channel: "mercadolivre",
+      channel: nsCounted ? null : "mercadolivre",
       fingerprint: `OVER_EXPOSED:${row.id}`,
       type: "OVER_EXPOSED",
       severity: "CRITICAL",
-      message: `${c.sku.skuCode}: anunciado ${exposureMl.confirmed} no ML, disponível seguro ${position.safeSellable} (excesso ${plan.overExposedBy})`,
-      details: { announced: exposureMl.confirmed, safeSellable: position.safeSellable, pending: position.pendingCommitments, ads: position.adsQuantity, reserve: position.safetyReserve },
+      message: `${c.sku.skuCode}: anunciado ${exposureMl.confirmed} no ML${nsCounted ? ` + ${nsObserved} na Nuvemshop` : ""}, disponível seguro ${position.safeSellable} (excesso ${plan.overExposedBy})`,
+      details: { announced: exposureMl.confirmed, nuvemshopObserved: nsCounted ? nsObserved : null, safeSellable: position.safeSellable, pending: position.pendingCommitments, ads: position.adsQuantity, reserve: position.safetyReserve },
+    });
+  }
+  if (c.channelsHere.includes("nuvemshop") && c.nsConnected && exposureNs.listings > 0 && exposureNs.confirmed === null) {
+    discrepancies.push({
+      ...where,
+      channel: "nuvemshop",
+      fingerprint: `NS_EXPOSURE_UNKNOWN:${row.id}`,
+      type: "NS_EXPOSURE_UNKNOWN",
+      severity: "WARNING",
+      message: `${c.sku.skuCode}: quantidade na Nuvemshop desconhecida (${exposureNs.unknownReason}) — não entra como zero`,
+      details: { reason: exposureNs.unknownReason },
     });
   }
   const pendingNow = Math.ceil(position.pendingCommitments - 1e-9);
