@@ -197,7 +197,10 @@ export async function dashboardSummary(sql: Sql) {
   const warehouse = await nuvemshopWarehouse(sql);
   const [inv] = await sql.query<{ pools: number; observed: number; lastRun: Date | null }>(
     `SELECT (SELECT count(DISTINCT ip.id)::int FROM inventory_pools ip JOIN nuvemshop_variant_mappings m ON m.product_id = ip.product_id AND m.status = 'CONFIRMED' WHERE ip.warehouse_code = $1) AS pools,
-            (SELECT count(*)::int FROM inventory_channel_allocations a JOIN inventory_pools ip ON ip.id = a.pool_id WHERE a.channel = 'nuvemshop' AND a.confirmed_quantity IS NOT NULL AND ip.warehouse_code = $1) AS observed,
+            -- Só pools de produtos com variante Nuvemshop vinculada (sem loja, a fase 0 grava 0 = "nada anunciado", não é leitura).
+            (SELECT count(*)::int FROM inventory_channel_allocations a JOIN inventory_pools ip ON ip.id = a.pool_id
+               WHERE a.channel = 'nuvemshop' AND a.confirmed_quantity IS NOT NULL AND ip.warehouse_code = $1
+                 AND EXISTS (SELECT 1 FROM nuvemshop_variant_mappings m WHERE m.product_id = ip.product_id AND m.status = 'CONFIRMED')) AS observed,
             (SELECT max(finished_at) FROM inventory_reconciliation_runs WHERE status IN ('COMPLETED','PARTIAL')) AS "lastRun"`,
     [warehouse],
   );
