@@ -169,6 +169,9 @@ async function renderTab(sql: ReturnType<typeof getSql>, tab: Tab, sp: SP): Prom
                     <th className="num">
                       Cota Nuvemshop <span className="sim">simulada</span>
                     </th>
+                    <th className="num">
+                      Lido na Nuvemshop <span className="real-label">real</span>
+                    </th>
                     <th className="num">Não alocado</th>
                     <th>Confiabilidade</th>
                     <th className="num">Alertas</th>
@@ -200,6 +203,7 @@ async function renderTab(sql: ReturnType<typeof getSql>, tab: Tab, sp: SP): Prom
                       <td className="num">
                         <span className="sim">{r.nsDesired ?? "—"}</span>
                       </td>
+                      <td className="num">{r.nsObserved ?? "—"}</td>
                       <td className="num">{r.unallocated ?? "—"}</td>
                       <td>
                         {chip(RELIABILITY_LABEL[r.reliability], r.reliability)}

@@ -42,11 +42,15 @@ async function triggerNextSlice(): Promise<void> {
   }
 }
 
-/** Uma fatia processa as duas filas em paralelo (importação ADS e publicação ML), cada uma com seu lease. */
+/**
+ * Uma fatia processa as filas em paralelo (importação ADS, publicação ML e importação do catálogo Nuvemshop —
+ * somente leitura), cada uma com seu lease.
+ */
 export async function runSliceAndChain(): Promise<void> {
   try {
     const { processPublicationJobs } = await import("../publish/worker");
-    const [imports, publish] = await Promise.all([
+    const { processNuvemshopJobs } = await import("../nuvemshop/import");
+    const [imports, publish, nuvemshop] = await Promise.all([
       processJobs({ budgetMs: SLICE_BUDGET_MS }).catch((err) => {
         logger.error("Erro no worker de importação", { err });
         return { more: false };
@@ -55,8 +59,12 @@ export async function runSliceAndChain(): Promise<void> {
         logger.error("Erro no worker de publicação", { err });
         return { more: false };
       }),
+      processNuvemshopJobs({ budgetMs: SLICE_BUDGET_MS }).catch((err) => {
+        logger.error("Erro no worker do catálogo Nuvemshop", { err });
+        return { more: false };
+      }),
     ]);
-    if (imports.more || publish.more) await triggerNextSlice();
+    if (imports.more || publish.more || nuvemshop.more) await triggerNextSlice();
   } catch (err) {
     logger.error("Erro no worker", { err });
   }

@@ -16,6 +16,11 @@ import { rateLimit } from "./rate-limit";
 import { StorageError } from "./storage/supabase";
 import { StockSyncError } from "./stock/settings";
 import { InventoryError } from "./inventory/mode";
+import { NuvemshopApiError } from "./nuvemshop/client";
+import { ImportConflictError } from "./nuvemshop/import";
+import { NuvemshopMappingError } from "./nuvemshop/mapping";
+import { NuvemshopWriteBlockedError } from "./nuvemshop/read-only";
+import { NuvemshopNotConnectedError, OtherStoreConnectedError } from "./nuvemshop/store";
 
 /** Contexto das rotas dinâmicas do App Router (ex.: { params: Promise<{ id: string }> }). */
 export type RouteContext<P extends Record<string, string> = Record<string, string>> = { params: Promise<P> };
@@ -60,6 +65,14 @@ export function adminHandler<C = unknown>(handler: (req: NextRequest, ctx: C) =>
       if (err instanceof CustomerError) return jsonNoStore({ error: err.code, message: err.message }, 409);
       if (err instanceof StockSyncError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
       if (err instanceof InventoryError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
+      if (err instanceof NuvemshopWriteBlockedError) return jsonNoStore({ error: err.code, message: err.message }, 403);
+      if (err instanceof NuvemshopNotConnectedError || err instanceof OtherStoreConnectedError) return jsonNoStore({ error: err.code, message: err.message }, 409);
+      if (err instanceof ImportConflictError) return jsonNoStore({ error: err.code, message: err.message, activeJobId: err.activeJobId }, 409);
+      if (err instanceof NuvemshopMappingError) return jsonNoStore({ error: err.code, message: err.message }, 409);
+      if (err instanceof NuvemshopApiError) {
+        const status = err.kind === "rate_limited" ? 429 : err.kind === "unauthorized" || err.kind === "forbidden" || err.kind === "payment_required" ? 409 : 502;
+        return jsonNoStore({ error: "nuvemshop_error", kind: err.kind, message: err.message }, status);
+      }
       if (err instanceof MappingError) return jsonNoStore({ error: err.code, message: err.message }, 409);
       if (err instanceof SettingsError) return jsonNoStore({ error: "invalid_settings", message: "Configuração inválida", issues: err.issues.map((i) => ({ path: i.field, message: i.message })) }, 422);
       if (err instanceof AdsApiError) return jsonNoStore({ error: "ads_error", kind: err.kind, message: err.message }, 502);
