@@ -8,6 +8,7 @@ import { acquireLease, releaseLease, renewLease } from "../imports/jobs";
 import { getSql, type Sql } from "../sql";
 import { getStorage } from "../storage/supabase";
 import { recordEvent } from "./events";
+import { translateMeliCause } from "./meli-messages";
 import { buildItemPayload, fingerprint, loadContext, sellerSku, type PublishContext } from "./payload";
 import { JOB_SELECT, type PublicationJob } from "./service";
 
@@ -52,8 +53,12 @@ async function logAttempt(
 
 function errorInfo(e: unknown) {
   if (e instanceof MeliHttpError) {
-    const causes = e.causes.map((c) => `${c.code ?? ""}: ${c.message ?? ""}`.trim()).filter(Boolean);
-    return { status: e.status || null, code: e.code ?? e.kind, message: [e.message, ...causes].join(" | ").slice(0, 1000), response: e.body };
+    // Mensagens em português (o texto original do ML continua guardado em `response`).
+    const causes = e.causes
+      .filter((c) => c.code || c.message)
+      .map((c) => `${c.type === "warning" ? "Aviso" : "Erro"}: ${translateMeliCause(c.code, c.message).message}`);
+    const head = e.causes.length ? "Recusado pelo Mercado Livre" : e.message;
+    return { status: e.status || null, code: e.code ?? e.kind, message: [head, ...causes].join(" | ").slice(0, 1000), response: e.body };
   }
   if (e instanceof MeliAuthError) return { status: null, code: e.code, message: e.message, response: undefined };
   return { status: null, code: "internal_error", message: e instanceof Error ? e.message : "Erro desconhecido", response: undefined };
