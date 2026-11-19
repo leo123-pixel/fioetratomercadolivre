@@ -8,6 +8,7 @@ import { MeliAuthError } from "../meli/tokens";
 import { syncAllListings } from "../publish/listings";
 import { getSql, type Sql } from "../sql";
 import { autoPriceState, getPriceSettings, runAutoPriceSync } from "../stock/prices";
+import { discoverLegacyListings } from "../stock/legacy";
 import { runStockSyncTick } from "../stock/reconcile";
 import { getStore } from "../store";
 import { raiseAlert } from "./alerts";
@@ -86,6 +87,31 @@ export const TICK_BUDGET_MS = 240_000;
 const TICK_JOB_BUDGET_MS = 60_000;
 /** Reservado ao preço automático no fim do tick, quando ligado. */
 const PRICE_RESERVE_MS = 60_000;
+/** Releitura automática da lista de anúncios da conta (inventário usado por estoque e preço). */
+const INVENTORY_REFRESH_MIN = 60;
+const INVENTORY_BUDGET_MS = 45_000;
+
+/**
+ * Mantém o inventário da conta atualizado sem botão: anúncios novos (publicados pelo integrador ou direto no
+ * ML) entram na sincronização de estoque e preço. Roda a cada INVENTORY_REFRESH_MIN; uma varredura que não
+ * coube no prazo continua no tick seguinte (itens relidos recentemente são pulados). Somente leitura no ML.
+ */
+async function refreshInventoryIfDue(sql: Sql, deadline: number): Promise<void> {
+  const [row] = await sql.query<{ due: boolean }>(
+    `SELECT (s.value IS NULL OR COALESCE((s.value->>'complete')::boolean, false) = false
+             OR s.updated_at < now() - make_interval(mins => $1::int)) AS due
+     FROM (SELECT 1) one LEFT JOIN app_settings s ON s.key = 'legacy_discovery_last'`,
+    [INVENTORY_REFRESH_MIN],
+  );
+  if (!row?.due) return;
+  const owner = randomUUID();
+  if (!(await acquireLease(sql, owner, "legacy-discovery"))) return;
+  try {
+    await discoverLegacyListings(sql, { deadline: Math.min(deadline, Date.now() + INVENTORY_BUDGET_MS), refreshMinutes: INVENTORY_REFRESH_MIN - 10 });
+  } finally {
+    await releaseLease(sql, owner, "legacy-discovery").catch(() => undefined);
+  }
+}
 
 export async function runSyncJob(sql: Sql, type: SyncJobType, trigger: Trigger, opts: { deadline?: number } = {}): Promise<SyncJobResult> {
   const deadline = opts.deadline ?? Date.now() + JOB_BUDGET_MS;
@@ -182,6 +208,9 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
   // Estoque: retentativas de atualizações já autorizadas e a automação (desligada por padrão; ver src/lib/stock).
   // O estoque recebe o tempo menos a reserva do preço (quando a automação de preço está ligada); se o estoque
   // terminar antes, o preço aproveita o resto.
+  if (connected && left() > 75_000) {
+    await refreshInventoryIfDue(sql, deadline - 30_000).catch((err) => logger.warn("Falha ao reler os anúncios da conta", { err }));
+  }
   if (connected && left() > 15_000) {
     const priceAuto = autoPriceState(await getPriceSettings(sql)).active;
     const reserve = Math.min(PRICE_RESERVE_MS, Math.floor(TICK_BUDGET_MS / 3));
