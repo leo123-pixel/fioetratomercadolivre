@@ -805,3 +805,22 @@ describe("correspondência por código do fabricante", () => {
     ]);
   });
 });
+
+describe("inventário automático", () => {
+  it("o tick do agendador relê a conta sozinho a cada hora e inclui anúncios novos", async () => {
+    const m = await setup([item("MLB1")]);
+    const sql = t.sql();
+    const ids = async () => (await sql.query<{ id: string }>(`SELECT DISTINCT marketplace_item_id AS id FROM legacy_listings WHERE removed_at IS NULL ORDER BY 1`)).map((r) => r.id);
+    await runTick(sql, "manual");
+    expect(await ids()).toEqual(["MLB1"]);
+    // Anúncio novo na conta: dentro da hora a conta não é relida.
+    m.state.items.set("MLB2", item("MLB2"));
+    await runTick(sql, "manual");
+    expect(await ids()).toEqual(["MLB1"]);
+    // Passada a hora, o próximo tick inclui o anúncio novo.
+    await sql.execute(`UPDATE app_settings SET updated_at = now() - interval '2 hours' WHERE key = 'legacy_discovery_last'`);
+    await runTick(sql, "manual");
+    expect(await ids()).toEqual(["MLB1", "MLB2"]);
+    expect(m.puts()).toHaveLength(0);
+  });
+});
