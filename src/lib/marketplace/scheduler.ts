@@ -17,6 +17,8 @@ import { classifyError } from "./errors";
 import { processEvents } from "./events";
 import { recoverMissedFeeds } from "./missed-feeds";
 import { recoverRecentOrders } from "./orders";
+import { getConnectedStore as getNuvemshopStore } from "../nuvemshop/store";
+import { runNuvemshopTick } from "../nuvemshop/scheduler";
 
 /**
  * Agendamento server-side, independente de navegador aberto:
@@ -87,6 +89,8 @@ export const TICK_BUDGET_MS = 240_000;
 const TICK_JOB_BUDGET_MS = 60_000;
 /** Reservado ao preço automático no fim do tick, quando ligado. */
 const PRICE_RESERVE_MS = 60_000;
+/** Reservado ao ciclo da Nuvemshop no fim do tick, quando há loja conectada (não depende da conta ML). */
+const NUVEMSHOP_RESERVE_MS = 60_000;
 /** Releitura automática da lista de anúncios da conta (inventário usado por estoque e preço). */
 const INVENTORY_REFRESH_MIN = 60;
 const INVENTORY_BUDGET_MS = 45_000;
@@ -211,19 +215,28 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
   if (connected && left() > 75_000) {
     await refreshInventoryIfDue(sql, deadline - 30_000).catch((err) => logger.warn("Falha ao reler os anúncios da conta", { err }));
   }
-  if (connected && left() > 15_000) {
+  const ns = await getNuvemshopStore(sql).catch(() => null);
+  const nsActive = ns?.connectionStatus === "ACTIVE";
+  // O ML usa o prazo menos a reserva da Nuvemshop (o ciclo Nuvemshop roda no fim, com tempo garantido).
+  const mlDeadline = nsActive ? deadline - NUVEMSHOP_RESERVE_MS : deadline;
+  const mlLeft = () => mlDeadline - Date.now();
+  if (connected && mlLeft() > 15_000) {
     const priceAuto = autoPriceState(await getPriceSettings(sql)).active;
     const reserve = Math.min(PRICE_RESERVE_MS, Math.floor(TICK_BUDGET_MS / 3));
-    const stockDeadline = priceAuto ? deadline - reserve : deadline;
+    const stockDeadline = priceAuto ? mlDeadline - reserve : mlDeadline;
     await runStockSyncTick(sql, stockDeadline).catch((err) => logger.error("Falha na sincronização de estoque", { err }));
     // Várias rodadas de preço enquanto houver tempo (cada uma confere um lote; para quando tudo foi conferido).
-    for (let round = 0; priceAuto && round < 8 && left() > 14_000; round++) {
-      const r = await runAutoPriceSync(sql, { deadline }).catch((err) => {
+    for (let round = 0; priceAuto && round < 8 && mlLeft() > 14_000; round++) {
+      const r = await runAutoPriceSync(sql, { deadline: mlDeadline }).catch((err) => {
         logger.error("Falha na sincronização automática de preço", { err });
         return null;
       });
       if (!r?.ran) break;
     }
+  }
+  // Nuvemshop (Fase 2): webhooks, pedidos, preço, estoque e escritas. Falhas não afetam o restante do tick.
+  if (nsActive && left() > 20_000) {
+    await runNuvemshopTick(sql, deadline - 8_000).catch((err) => logger.error("Falha no ciclo Nuvemshop", { err }));
   }
   // O tempo que sobrar vai para a fila (inclui eventos gerados pelas rotinas, como pedidos recuperados).
   if (left() > 10_000) {

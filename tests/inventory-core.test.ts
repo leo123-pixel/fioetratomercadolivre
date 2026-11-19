@@ -577,7 +577,7 @@ describe("Inventory Core — desativação e bloqueio estrutural de escrita", ()
     };
     for (const r of roots) walk(join(process.cwd(), r));
     expect(files.length).toBeGreaterThan(5);
-    const forbidden = [/\bexecuteWrite\b/, /\bbuildWrite\b/, /\bprocessStockJobs\b/, /\bapplyProposals\b/, /\brunAutoStockSync\b/, /\bsendOrderToAds\b/, /\badsCall\b/, /\bmeliRequest\b/, /\bupsertStocks\b/, /\bfetchAdsStocks\b/, /method:\s*["'](PUT|POST|PATCH|DELETE)["']/,
+    const forbidden = [/\bexecuteWrite\b/, /\bbuildWrite\b/, /\bprocessStockJobs\b/, /\bapplyProposals\b/, /\brunAutoStockSync\b/, /\bsendOrderToAds\b/, /\badsCall\b/, /\bmeliRequest\b/, /\bupsertStocks\b/, /\bfetchAdsStocks\b/, /\benqueueWrite\b/, /\bprocessWriteJobs\b/, /\bissueWritePermit\b/, /\.send(<[^>]*>)?\(/,/method:\s*["'](PUT|POST|PATCH|DELETE)["']/,
       // pg_advisory_xact_lock devolve void: via $queryRawUnsafe o Prisma falha em produção (o PGlite aceita). Usar execute().
       /\.query(<[^>]*>)?\(\s*`SELECT pg_advisory/];
     for (const f of files) {

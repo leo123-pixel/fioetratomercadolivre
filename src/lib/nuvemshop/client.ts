@@ -1,7 +1,7 @@
 import "server-only";
 import { logger, redactString } from "../logger";
 import { getNuvemshopEnv, type NuvemshopEnv } from "./env";
-import { assertNuvemshopWriteAllowed } from "./read-only";
+import { assertPermit, type WritePermit } from "./write-gate";
 
 /**
  * NuvemshopApiClient — Admin API 2025-03, SOMENTE LEITURA (Fase 1).
@@ -39,6 +39,10 @@ export class NuvemshopApiError extends Error {
     super(message);
     this.name = "NuvemshopApiError";
   }
+  /** Escrita cujo resultado não é conhecido (timeout, rede, 5xx): conferir por leitura antes de repetir. */
+  uncertain = false;
+  /** Corpo de erro devolvido pela API (validação 422), quando JSON. */
+  body: unknown = null;
   get retryable(): boolean {
     return this.kind === "rate_limited" || this.kind === "server" || this.kind === "timeout" || this.kind === "network";
   }
@@ -242,10 +246,94 @@ export class NuvemshopApiClient {
     }
   }
 
-  /** Fase 1: qualquer método de escrita é recusado antes de chegar à rede. */
-  write(verb: WriteVerb, path: string): never {
-    const method = verb;
-    return assertNuvemshopWriteAllowed(`${method} ${path}`);
+  /**
+   * Escrita (Fase 2). Exige a permissão do portão (write-gate.ts) — sem ela nada chega à rede.
+   *
+   * Retentativas: 429 é sempre repetido (a requisição não foi aplicada). 5xx, timeout e falha de rede só são
+   * repetidos quando `idempotent` (valor absoluto, ex.: preço/estoque por PATCH); caso contrário o erro sai com
+   * `uncertain = true` — o resultado precisa ser conferido por leitura antes de qualquer nova tentativa.
+   */
+  async send<T>(permit: WritePermit, verb: WriteVerb, path: string, body: unknown, opts: { idempotent: boolean }): Promise<{ data: T; status: number }> {
+    assertPermit(permit, this.storeId, `${verb} ${path}`);
+    const url = this.url(path);
+    let attempt = 0;
+    for (;;) {
+      attempt++;
+      await this.throttle();
+      const started = Date.now();
+      let res: Response;
+      try {
+        this.metrics.requests++;
+        res = await this.fetchImpl(url, {
+          method: verb,
+          headers: { Authorization: `Bearer ${this.token}`, "User-Agent": this.userAgent, Accept: "application/json", "Content-Type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+          cache: "no-store",
+          redirect: "error",
+        });
+      } catch (err) {
+        this.metrics.totalMs += Date.now() - started;
+        const timeout = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError";
+        const e = new NuvemshopApiError(timeout ? "timeout" : "network", timeout ? "Tempo esgotado na escrita na Nuvemshop (resultado incerto)" : "Falha de rede na escrita na Nuvemshop (resultado incerto)");
+        e.uncertain = true;
+        if (opts.idempotent && attempt <= this.maxRetries) {
+          this.metrics.retries++;
+          await this.sleep(this.backoff(attempt, null));
+          continue;
+        }
+        throw e;
+      }
+      this.metrics.totalMs += Date.now() - started;
+      const remaining = numberHeader(res.headers, "x-rate-limit-remaining");
+      const resetMs = numberHeader(res.headers, "x-rate-limit-reset");
+      if (remaining !== null) buckets.set(this.storeId, { remaining, resetAt: Date.now() + (resetMs ?? 0) });
+      const text = await res.text().catch(() => "");
+      if (res.ok) {
+        try {
+          return { data: (text ? JSON.parse(text) : null) as T, status: res.status };
+        } catch {
+          const e = new NuvemshopApiError("invalid_response", "Resposta da escrita na Nuvemshop não é JSON válido", res.status);
+          e.uncertain = true;
+          throw e;
+        }
+      }
+      const kind: NuvemshopErrorKind = KIND_BY_STATUS[res.status] ?? (res.status >= 500 ? "server" : "bad_request");
+      let detail = "";
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(text);
+        const j = parsed as { message?: string; description?: string; error?: string };
+        detail = [j.message, j.description, j.error].filter(Boolean).join(" — ");
+        const fields = Object.entries(parsed as Record<string, unknown>).filter(([k, v]) => !["code", "message", "description", "error"].includes(k) && Array.isArray(v));
+        if (fields.length) detail += ` (${fields.map(([k, v]) => `${k}: ${(v as unknown[]).join(", ")}`).join("; ")})`;
+      } catch {
+        detail = text.slice(0, 200);
+      }
+      const retryAfter = numberHeader(res.headers, "retry-after");
+      const hint = kind === "rate_limited" ? (resetMs ?? (retryAfter !== null ? retryAfter * 1000 : null)) : null;
+      const err = new NuvemshopApiError(kind, redactString(`${MESSAGES[kind] ?? `Nuvemshop respondeu ${res.status}`}${detail ? ` (${detail.slice(0, 400)})` : ""}`), res.status, hint);
+      err.body = parsed;
+      if (kind === "rate_limited") {
+        this.metrics.rateLimited++;
+        if (attempt <= this.maxRetries) {
+          this.metrics.retries++;
+          await this.sleep(this.backoff(attempt, hint));
+          continue;
+        }
+        throw err;
+      }
+      if (kind === "server") {
+        err.uncertain = true;
+        if (opts.idempotent && attempt <= this.maxRetries) {
+          this.metrics.retries++;
+          logger.warn("Nuvemshop: nova tentativa de escrita idempotente", { status: res.status, attempt });
+          await this.sleep(this.backoff(attempt, null));
+          continue;
+        }
+      }
+      throw err;
+    }
   }
 }
 

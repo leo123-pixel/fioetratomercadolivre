@@ -1,10 +1,11 @@
-/** Navegação das telas Nuvemshop (Fase 1 — somente leitura). */
-export function NuvemshopTabs({ current }: { current: "overview" | "products" | "linking" | "simulation" }) {
+/** Navegação das telas Nuvemshop. */
+export function NuvemshopTabs({ current }: { current: "overview" | "products" | "linking" | "simulation" | "automation" }) {
   const tabs = [
     { key: "overview", href: "/nuvemshop", label: "Visão geral" },
     { key: "products", href: "/nuvemshop/produtos", label: "Produtos" },
     { key: "linking", href: "/nuvemshop/produtos/vinculacao", label: "Vinculação ADS" },
     { key: "simulation", href: "/nuvemshop/simulacao", label: "Simulação de estoque" },
+    { key: "automation", href: "/nuvemshop/automacoes", label: "Automações" },
   ] as const;
   return (
     <>
@@ -16,8 +17,8 @@ export function NuvemshopTabs({ current }: { current: "overview" | "products" | 
         ))}
       </nav>
       <div className="alert info">
-        <strong>Fase 1 — somente leitura.</strong> O integrador lê a loja (produtos, variantes, imagens, preços, localizações e estoque) e guarda os vínculos com a ADS{" "}
-        <em>aqui no banco</em>. Nada é criado, editado, publicado ou atualizado na Nuvemshop, e nenhum pedido vai para a ADS.
+        <strong>Fase 2.</strong> Produtos e imagens são editados manualmente (cada escrita é relida e auditada). Preço e estoque só são escritos pelas{" "}
+        <a href="/nuvemshop/automacoes">Automações</a> em PILOTO ou AUTOMÁTICO, nas variantes selecionadas; o estoque sempre vem da cota do Inventory Core. Nenhum pedido vai para a ADS.
       </div>
     </>
   );

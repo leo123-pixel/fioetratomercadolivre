@@ -48,7 +48,7 @@ export default async function NuvemshopProdutosPage({ searchParams }: { searchPa
       </p>
       <div className="page-head">
         <h1>Produtos da Nuvemshop</h1>
-        <span className="muted">Dados importados (somente leitura) · para atualizar, use “Atualizar catálogo” na visão geral</span>
+        <span className="muted">Catálogo importado · edite um produto pelo link “editar” ou <a href="/nuvemshop/catalogo/novo">crie um produto a partir da ADS</a></span>
       </div>
       <NuvemshopTabs current="products" />
       {!data ? (
@@ -122,6 +122,8 @@ export default async function NuvemshopProdutosPage({ searchParams }: { searchPa
                             <br />
                             {r.variantId}
                           </small>
+                          <br />
+                          <a href={`/nuvemshop/catalogo/${r.productId}`}>editar</a>
                         </td>
                         <td>
                           {r.price ? formatMoney(r.price) : "—"}

@@ -31,6 +31,15 @@ export async function createTestDatabase(): Promise<{ db: PGlite; sql: Sql }> {
 }
 
 const TABLES = [
+  "nuvemshop_write_attempts",
+  "nuvemshop_write_jobs",
+  "nuvemshop_sync_items",
+  "nuvemshop_sync_runs",
+  "nuvemshop_sync_variants",
+  "nuvemshop_product_operations",
+  "nuvemshop_webhook_events",
+  "nuvemshop_webhook_registrations",
+  "nuvemshop_orders",
   "nuvemshop_mapping_history",
   "nuvemshop_mapping_components",
   "nuvemshop_variant_mappings",
@@ -109,6 +118,9 @@ export function useTestDatabase(): { sql: () => Sql; db: () => PGlite } {
   }, 60_000);
   beforeEach(async () => {
     await ctx.db.exec(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);
+    // Linhas de configuração criadas pela migration (não são truncadas): volta ao estado inicial.
+    await ctx.db.exec(`UPDATE nuvemshop_automation_settings SET mode = 'DISABLED', resume_mode = NULL, scope = 'SELECTED', policy = '{}', automatic_approved_by = NULL, automatic_approved_at = NULL, paused_reason = NULL, last_run_id = NULL, last_run_at = NULL, next_run_at = NULL, version = 1;
+      UPDATE nuvemshop_emergency_stop SET active = false, reason = NULL, activated_by = NULL, activated_at = NULL;`);
     setSqlForTesting(ctx.sql);
   });
   afterAll(async () => {
