@@ -34,10 +34,10 @@ interface Review {
 const pct = (v: string | null) => (v === null ? "" : ` (${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(1)}%)`);
 
 /**
- * Aprovação direto na linha: reconsulta ADS e ML só deste anúncio (estoque e, se legado, preço), mostra o que
+ * Aprovação direto na linha: reconsulta ADS e ML só deste anúncio (estoque e preço), mostra o que
  * muda e aplica somente o que o operador confirmar.
  */
-export function ApproveRow(props: { itemId: string; legacy: boolean; onClose: () => void; onDone: (msg: string, kind: "success" | "warn" | "error") => void }) {
+export function ApproveRow(props: { itemId: string; withPrice: boolean; onClose: () => void; onDone: (msg: string, kind: "success" | "warn" | "error") => void }) {
   const [review, setReview] = useState<Review | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -51,7 +51,7 @@ export function ApproveRow(props: { itemId: string; legacy: boolean; onClose: ()
     setLoading(true);
     setError(null);
     const stockReq = api<{ proposals: StockProposal[] }>("/api/stock-sync/preview", { method: "POST", body: { itemIds: [props.itemId] } });
-    const priceReq = props.legacy ? api<{ proposals: PriceProposal[] }>("/api/price-sync/preview", { method: "POST", body: { itemIds: [props.itemId] } }) : null;
+    const priceReq = props.withPrice ? api<{ proposals: PriceProposal[] }>("/api/price-sync/preview", { method: "POST", body: { itemIds: [props.itemId] } }) : null;
     const [s, p] = await Promise.all([stockReq, priceReq]);
 
     const stock: Review["stock"] = { proposal: null, token: null, blockers: [], error: null };
@@ -149,7 +149,7 @@ export function ApproveRow(props: { itemId: string; legacy: boolean; onClose: ()
           <strong>Aprovar atualização de {props.itemId}</strong>
         </p>
         <p className="muted">
-          Primeiro o sistema consulta agora a ADS e o Mercado Livre deste anúncio (nada é alterado) e mostra o que muda{props.legacy ? " no estoque e no preço" : " no estoque"}.
+          Primeiro o sistema consulta agora a ADS e o Mercado Livre deste anúncio (nada é alterado) e mostra o que muda{props.withPrice ? " no estoque e no preço" : " no estoque"}.
         </p>
         {error && <div className="alert error">{error}</div>}
         <div className="actions">

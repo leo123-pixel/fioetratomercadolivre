@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const body = z.object({
-  /** Anúncios a simular (vazio = todos os legados vinculados). */
+  /** Anúncios a simular (vazio = todos os anúncios vinculados). */
   itemIds: z.array(z.string().regex(/^MLB\d{1,15}$/)).max(500).optional(),
 });
 

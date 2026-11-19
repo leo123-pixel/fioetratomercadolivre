@@ -287,6 +287,32 @@ describe("sincronização de preço (fluxo completo)", () => {
     expect(r.results[0].status).toBe("APPLIED");
     expect(s.puts[0].body).toEqual({ variations: [{ id: 111, price: 42 }, { id: 222, price: 42 }] });
   });
+
+  it("anúncio publicado pelo integrador também segue a tabela da ADS e atualiza o preço local", async () => {
+    const p1 = await product(9401);
+    const s = await scenario({ mlPrices: { MLB41: 116.9 }, ads: [adsPrice(9401, "M", 103.95)] });
+    const [{ id: draft }] = await t.sql().query<{ id: number }>(`INSERT INTO listing_drafts (product_id, status) VALUES ($1, 'PUBLISHED') RETURNING id`, [p1]);
+    await t.sql().execute(
+      `INSERT INTO marketplace_listings (product_id, ads_product_id, listing_draft_id, marketplace_account_id, marketplace_item_id, category_id, price, quantity, status, remote_price)
+       VALUES ($1, 9401, $2, '42', 'MLB41', 'MLB264861', 116.9, 5, 'active', 116.9)`,
+      [p1, draft],
+    );
+    await discoverLegacyListings(t.sql(), { refreshMinutes: 0 });
+    const [{ origin }] = await t.sql().query<{ origin: string }>(`SELECT origin FROM legacy_listings WHERE marketplace_item_id = 'MLB41'`);
+    expect(origin).toBe("INTEGRATOR");
+
+    const run = await runPricePreview(t.sql(), { requestedBy: ACTOR });
+    const ps = await getPriceProposals(t.sql(), run.runId);
+    expect(ps).toHaveLength(1);
+    expect(ps[0]).toMatchObject({ marketplaceItemId: "MLB41", status: "PROPOSED", marketplacePrice: "116.90", proposedPrice: "103.95" });
+    const r = await applyPriceProposals(t.sql(), { proposalIds: [ps[0].id], actor: ACTOR, allowLargeChanges: false });
+    expect(r.results[0].status).toBe("APPLIED");
+    expect(s.puts).toEqual([{ path: "/items/MLB41", body: { price: 103.95 } }]);
+    const [local] = await t.sql().query<{ price: string; remote: string }>(
+      `SELECT price::text AS price, remote_price::text AS remote FROM marketplace_listings WHERE marketplace_item_id = 'MLB41'`,
+    );
+    expect(local).toEqual({ price: "103.95", remote: "103.95" });
+  });
 });
 
 describe("preço automático", () => {

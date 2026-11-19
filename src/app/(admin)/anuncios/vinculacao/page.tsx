@@ -71,7 +71,7 @@ export default async function VinculacaoPage({ searchParams }: { searchParams: P
       </div>
       <div className="alert info">
         Vincule cada anúncio do Mercado Livre ao produto da ADS. Sugestões vêm de SKU, GTIN ou código do fabricante — nunca do título — e só valem depois da sua
-        confirmação. As alterações feitas no Mercado Livre são a <strong>quantidade</strong> e, nos anúncios legados, o <strong>preço</strong> (tabela da ADS): pelo botão
+        confirmação. As alterações feitas no Mercado Livre são a <strong>quantidade</strong> e o <strong>preço</strong> (tabela da ADS): pelo botão
         Aprovar de cada linha ou, com a automação ligada (Configurações, no fim da página), sozinhos a cada intervalo.
       </div>
       <LinkingPanel
