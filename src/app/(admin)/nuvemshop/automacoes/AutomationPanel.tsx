@@ -403,6 +403,7 @@ function AutomationCard({ a, data, busy, act, automaticPhrase }: { a: Automation
               {field("marginPct", "Margem adicional (%)", "number", "0.01")}
               {field("minPrice", "Preço mínimo (R$)", "number", "0.01")}
               {field("maxChangePct", "Variação máx. sem revisão (%)", "number", "0.1")}
+              {field("cacheMaxAgeHours", "Idade máx. do preço gravado (h)")}
               <label>
                 Arredondamento
                 <select value={String(policy.rounding)} onChange={(e) => setPolicy({ ...policy, rounding: e.target.value })}>
@@ -709,7 +710,7 @@ function Participants({ busy, act }: { busy: string | null; act: (k: string, b: 
 
 function RunsSection({ runs }: { runs: Run[] }) {
   const [open, setOpen] = useState<string | null>(null);
-  const [detail, setDetail] = useState<{ items: { id: string; variantId: string; sku: string | null; current: string | null; target: string | null; decision: string; reasonCode: string | null; reason: string | null; jobStatus: string | null }[] } | null>(null);
+  const [detail, setDetail] = useState<{ items: { id: string; variantId: string; sku: string | null; current: string | null; target: string | null; decision: string; reasonCode: string | null; reason: string | null; jobStatus: string | null; details: { priceSource?: string; priceFetchedAt?: string | null } | null }[] } | null>(null);
   const toggle = async (id: string) => {
     if (open === id) return setOpen(null);
     setOpen(id);
@@ -772,7 +773,12 @@ function RunsSection({ runs }: { runs: Run[] }) {
                                   <td>
                                     {value(r.kind, i.current)} → {value(r.kind, i.target)}
                                   </td>
-                                  <td>{i.decision}</td>
+                                  <td>
+                                    {i.decision}
+                                    {i.details?.priceSource && (
+                                      <small className="muted"> · {i.details.priceSource === "LIVE" ? "ADS ao vivo" : `banco (lido em ${formatDateTime(i.details.priceFetchedAt ?? null)})`}</small>
+                                    )}
+                                  </td>
                                   <td>
                                     <small>
                                       {i.reasonCode} {i.reason}

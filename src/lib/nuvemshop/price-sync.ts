@@ -5,7 +5,8 @@ import { acquireLease, releaseLease } from "../imports/jobs";
 import { logger } from "../logger";
 import { raiseAlert } from "../marketplace/alerts";
 import type { Sql } from "../sql";
-import { DEFAULT_PRICE_SETTINGS, fetchAdsPrices, type AdsPrice } from "../stock/prices";
+import { DEFAULT_PRICE_SETTINGS, fetchAdsPrices, pickPrice, type AdsPrice } from "../stock/prices";
+import type { PriceRow } from "../ads/schemas";
 import { getStockSettings } from "../stock/settings";
 import { AutomationError, getAutomation, markRunScheduled, recordVariantDecision, RUN_MODES, selectedForWrite, type AutomationMode, type Participation, type PricePolicy } from "./automation";
 import { cents, fromCents, refreshProducts, type RemoteVariantState } from "./remote-state";
@@ -21,6 +22,10 @@ import { enqueueWrite, type WorkerDeps } from "./write-jobs";
  *  5. identifica divergências;                                          6. prepara a atualização;
  *  7. enfileira (fila persistente);                                     8. o worker atualiza o preço remoto (PATCH stock-price);
  *  9. o worker relê e confirma;                                        10. tudo fica no histórico (runs, items, jobs, tentativas).
+ *
+ * Origem do preço: no horário da ADS, leitura ao vivo (GET); fora dele, ou se a ADS falhar, o preço da tabela já
+ * gravado no sistema (product_prices, atualizado pela importação e pelas leituras ao vivo), desde que lido há no
+ * máximo cacheMaxAgeHours — mais antigo fica bloqueado. A origem de cada preço fica registrada no histórico.
  *
  * Regras de segurança: preço ADS ausente/zero/erro nunca é escrito; descontos da ADS NÃO são aplicados (só o preço
  * da tabela); variante com preço promocional não é tocada (BLOCK) ou só tem o preço cheio atualizado se a promoção
@@ -54,13 +59,24 @@ export function computeTargetCents(baseCents: number, p: Pick<PricePolicy, "marg
   return c;
 }
 
-export function evaluatePrice(input: { ads: AdsPrice | undefined; remote: RemoteVariantState | undefined; kit: boolean; policy: PricePolicy }): PriceEvaluation {
+/** De onde veio o preço ADS usado na decisão. */
+export interface PriceSource {
+  source: "LIVE" | "CACHE";
+  fetchedAt: string | null;
+  /** Preço do banco mais antigo que cacheMaxAgeHours. */
+  stale: boolean;
+}
+
+export function evaluatePrice(input: { ads: AdsPrice | undefined; remote: RemoteVariantState | undefined; kit: boolean; policy: PricePolicy; source?: PriceSource }): PriceEvaluation {
   const base = { baseCents: null, targetCents: null, currentCents: null, changePct: null };
   const r = input.remote;
   if (!r || r.removed) return { ...base, decision: "BLOCKED", reasonCode: "REMOTE_UNKNOWN", reason: "Variante não encontrada na releitura da Nuvemshop" };
   const currentCents = cents(r.price);
   if (input.kit) return { ...base, currentCents, decision: "BLOCKED", reasonCode: "KIT", reason: "Kit/composição: preço não é derivado de um único produto ADS" };
   const a = input.ads;
+  if (a && input.source?.stale) {
+    return { ...base, currentCents, decision: "BLOCKED", reasonCode: "ADS_PRICE_STALE", reason: `Preço da tabela gravado no sistema está desatualizado (lido em ${input.source.fetchedAt ?? "?"}, limite ${input.policy.cacheMaxAgeHours} h): não aplicado` };
+  }
   if (!a || a.status === "ERROR") return { ...base, currentCents, decision: "BLOCKED", reasonCode: "ADS_ERROR", reason: `Falha ao consultar o preço na ADS${a?.error ? `: ${a.error}` : ""} (nada é escrito)` };
   const adsCents = cents(a.price);
   if (a.status !== "KNOWN" || adsCents === null) return { ...base, currentCents, decision: "BLOCKED", reasonCode: "ADS_PRICE_UNKNOWN", reason: "Produto sem preço ativo na tabela ADS configurada (nunca vira zero)" };
@@ -160,8 +176,8 @@ async function executePrice(
   opts: { requestedBy: string; variantIds?: string[]; deadline?: number; deps?: WorkerDeps },
 ): Promise<{ status: "COMPLETED" | "PARTIAL" | "SKIPPED"; summary: Record<string, unknown> }> {
   if (!policy.priceTableCode) return { status: "SKIPPED", summary: { reason: "Tabela comercial ADS de referência não configurada" } };
+  // Fora do horário da ADS a execução continua: os preços vêm do que já está gravado no sistema (com limite de idade).
   const hours = adsHoursState(await getStockSettings(sql));
-  if (!hours.open) return { status: "SKIPPED", summary: { reason: hours.reason ?? "Fora do horário da ADS" } };
   const conn = opts.deps?.client ?? (await clientForConnectedStore(sql, { fetchImpl: opts.deps?.fetchImpl, sleep: opts.deps?.sleep, maxRetries: opts.deps?.maxRetries }));
   const storeId = conn.store.storeId;
   const candidates = await priceCandidates(sql, storeId, opts.variantIds ?? null);
@@ -169,9 +185,11 @@ async function executePrice(
 
   const remote = (await refreshProducts(sql, conn.client, storeId, [...new Set(candidates.map((c) => c.nsProductId))])).variants;
   const singleProducts = [...new Set(candidates.filter((c) => !c.components && !c.nsKit && !c.adsKit).map((c) => c.productId))];
-  const ads = await fetchAdsPrices(sql, singleProducts, { ...DEFAULT_PRICE_SETTINGS, priceTableCode: policy.priceTableCode, branchId: policy.branchId }, { deadline: opts.deadline });
+  const { ads, sources } = await adsPricesFor(sql, singleProducts, policy, { live: hours.open, deadline: opts.deadline });
   const known = [...ads.values()].filter((a) => a.status === "KNOWN").length;
   const errors = [...ads.values()].filter((a) => a.status === "ERROR").length;
+  const all = [...sources.values()];
+  const origin = { live: all.filter((s) => s.source === "LIVE").length, cache: all.filter((s) => s.source === "CACHE").length, stale: all.filter((s) => s.stale).length };
   if (singleProducts.length && !known && !errors) {
     await raiseAlert(sql, "nuvemshop_price_table_empty", `Nenhum preço encontrado na tabela ADS "${policy.priceTableCode}" para os produtos vinculados à Nuvemshop: confira a tabela configurada`);
   }
@@ -179,7 +197,8 @@ async function executePrice(
   const counts: Record<string, number> = { IN_SYNC: 0, WRITE: 0, SHADOW: 0, BLOCKED: 0, REVIEW: 0, NOT_SELECTED: 0, enqueued: 0, activeJob: 0 };
   const writeMode = mode === "PILOT" || mode === "AUTOMATIC";
   for (const c of candidates) {
-    const ev = evaluatePrice({ ads: ads.get(c.productId), remote: remote.get(c.variantId), kit: c.components > 0 || c.nsKit || c.adsKit, policy });
+    const source = sources.get(c.productId);
+    const ev = evaluatePrice({ ads: ads.get(c.productId), remote: remote.get(c.variantId), kit: c.components > 0 || c.nsKit || c.adsKit, policy, source });
     let decision: string = ev.decision;
     let reasonCode = ev.reasonCode;
     let reason = ev.reason;
@@ -218,13 +237,90 @@ async function executePrice(
     }
     counts[decision] = (counts[decision] ?? 0) + 1;
     await sql.execute(
-      `INSERT INTO nuvemshop_sync_items (run_id, kind, store_id, nuvemshop_product_id, variant_id, product_id, current_value, base_value, target_value, change_pct, decision, reason_code, reason, job_id)
-       VALUES ($1::uuid, 'PRICE', $2, $3::bigint, $4::bigint, $5, $6, $7, $8, $9, $10, $11, $12, $13::uuid)`,
-      [runId, storeId, c.nsProductId, c.variantId, c.productId, ev.currentCents === null ? null : String(ev.currentCents), ev.baseCents === null ? null : String(ev.baseCents), ev.targetCents === null ? null : String(ev.targetCents), ev.changePct, decision, reasonCode, reason, jobId],
+      `INSERT INTO nuvemshop_sync_items (run_id, kind, store_id, nuvemshop_product_id, variant_id, product_id, current_value, base_value, target_value, change_pct, decision, reason_code, reason, job_id, details)
+       VALUES ($1::uuid, 'PRICE', $2, $3::bigint, $4::bigint, $5, $6, $7, $8, $9, $10, $11, $12, $13::uuid, $14::jsonb)`,
+      [
+        runId,
+        storeId,
+        c.nsProductId,
+        c.variantId,
+        c.productId,
+        ev.currentCents === null ? null : String(ev.currentCents),
+        ev.baseCents === null ? null : String(ev.baseCents),
+        ev.targetCents === null ? null : String(ev.targetCents),
+        ev.changePct,
+        decision,
+        reasonCode,
+        reason,
+        jobId,
+        JSON.stringify(source ? { priceSource: source.source, priceFetchedAt: source.fetchedAt } : {}),
+      ],
     );
     if (!simulate) await recordVariantDecision(sql, { storeId, variantId: c.variantId, kind: "PRICE", decision, reasonCode, reason, target: ev.targetCents === null ? null : String(ev.targetCents), remote: ev.currentCents === null ? null : String(ev.currentCents) });
   }
-  return { status: "COMPLETED", summary: { mode, table: policy.priceTableCode, variants: candidates.length, adsPrices: { known, errors, requested: singleProducts.length }, decisions: counts } };
+  return { status: "COMPLETED", summary: { mode, table: policy.priceTableCode, variants: candidates.length, adsLive: hours.open, adsPrices: { known, errors, requested: singleProducts.length, ...origin }, decisions: counts } };
+}
+
+/**
+ * Preço da tabela por produto: ao vivo na ADS (no horário) e, para o que não veio ao vivo (fora do horário ou ADS com
+ * falha), o último valor gravado no sistema — marcado como desatualizado se mais antigo que cacheMaxAgeHours.
+ */
+export async function adsPricesFor(
+  sql: Sql,
+  productIds: number[],
+  policy: PricePolicy,
+  opts: { live: boolean; deadline?: number; now?: Date },
+): Promise<{ ads: Map<number, AdsPrice>; sources: Map<number, PriceSource> }> {
+  const settings = { ...DEFAULT_PRICE_SETTINGS, priceTableCode: policy.priceTableCode ?? "", branchId: policy.branchId };
+  const ads = new Map<number, AdsPrice>();
+  const sources = new Map<number, PriceSource>();
+  const now = opts.now ?? new Date();
+  if (opts.live && productIds.length) {
+    const live = await fetchAdsPrices(sql, productIds, settings, { deadline: opts.deadline });
+    for (const [id, a] of live) {
+      if (a.status === "ERROR") continue; // vai para o valor gravado no sistema
+      ads.set(id, a);
+      sources.set(id, { source: "LIVE", fetchedAt: now.toISOString(), stale: false });
+    }
+  }
+  const missing = productIds.filter((id) => !ads.has(id));
+  if (!missing.length) return { ads, sources };
+  const rows = await sql.query<{ productId: number; adsProductId: number; branchId: string; table: string; price: string | null; inactive: boolean; adsUpdatedAt: Date | null; fetchedAt: Date }>(
+    `SELECT product_id AS "productId", ads_product_id AS "adsProductId", branch_id AS "branchId", price_table_code AS "table", trim_scale(price)::text AS price, inactive,
+            ads_updated_at AS "adsUpdatedAt", fetched_at AS "fetchedAt"
+     FROM product_prices WHERE product_id = ANY($1::int[]) AND price_table_code = $2`,
+    [missing, settings.priceTableCode],
+  );
+  for (const id of missing) {
+    const mine = rows.filter((r) => r.productId === id);
+    if (!mine.length) {
+      ads.set(id, { status: "UNKNOWN", price: null, branchId: null, updatedAt: null });
+      continue;
+    }
+    const asRows: PriceRow[] = mine.map((r) => ({
+      ads_product_id: r.adsProductId,
+      branch_id: r.branchId,
+      price_table_code: r.table,
+      price: r.price,
+      discount: null,
+      commission: null,
+      ceiling_value: null,
+      pvs: null,
+      minimum_quantity: null,
+      inactive: r.inactive,
+      promotion: false,
+      ads_updated_at: r.adsUpdatedAt ? new Date(r.adsUpdatedAt).toISOString() : null,
+      raw_payload: null,
+    }));
+    const picked = pickPrice(asRows, mine[0].adsProductId, settings);
+    ads.set(id, picked);
+    const row = mine.find((r) => r.branchId === picked.branchId);
+    if (picked.status === "KNOWN" && row) {
+      const fetchedAt = new Date(row.fetchedAt);
+      sources.set(id, { source: "CACHE", fetchedAt: fetchedAt.toISOString(), stale: now.getTime() - fetchedAt.getTime() > policy.cacheMaxAgeHours * 3_600_000 });
+    }
+  }
+  return { ads, sources };
 }
 
 /** Aprova um item em revisão (variação grande ou primeiro preço): cria uma escrita MANUAL com o mesmo compare-and-set. */
