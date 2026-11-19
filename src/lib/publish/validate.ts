@@ -2,7 +2,7 @@ import "server-only";
 import { DraftLockedError, LOCKED_STATUSES, ML_TITLE_MAX, type DraftAttributeValue, type DraftStatus } from "../catalog/drafts";
 import { RECOMMENDED_MIN_SIDE } from "../catalog/images";
 import { logger } from "../logger";
-import { meliRequest, MeliHttpError } from "../meli/api";
+import { meliRequest, MeliHttpError, type MeliCause } from "../meli/api";
 import { getCapabilities, type PublicationModel } from "../meli/capabilities";
 import { isValidGtin } from "../meli/catalog";
 import {
@@ -15,6 +15,7 @@ import {
 } from "../meli/categories";
 import type { Sql } from "../sql";
 import { recordEvent } from "./events";
+import { translateMeliCause, type AttributeNameLookup } from "./meli-messages";
 import { buildItemPayload, fingerprint, loadContext, type PublishContext } from "./payload";
 
 /**
@@ -205,11 +206,20 @@ export function checkImages(ctx: PublishContext, category: CategoryDetail | null
   return issues;
 }
 
-/** Converte a resposta de erro de POST /items/validate em pendências. */
-export function issuesFromMeli(e: MeliHttpError): ValidationIssue[] {
-  const fromCauses = e.causes.map((c) =>
-    (c.type === "warning" ? warn : err)(`ML_${(c.code ?? "cause").toUpperCase()}`, c.message ?? c.code ?? "Erro informado pelo Mercado Livre", "mercadolivre"),
-  );
+/** Converte uma causa do ML em pendência, com a mensagem traduzida para português. */
+function causeIssue(c: MeliCause, severity: "error" | "warning", names?: AttributeNameLookup): ValidationIssue {
+  const t = translateMeliCause(c.code, c.message, names);
+  return (severity === "warning" ? warn : err)(`ML_${(c.code ?? "cause").toUpperCase()}`, t.message, "mercadolivre", t.field);
+}
+
+function attrNames(attrs: MeliAttribute[]): AttributeNameLookup {
+  const byId = new Map(attrs.map((a) => [a.id, a.name]));
+  return (id) => byId.get(id);
+}
+
+/** Converte a resposta de erro de POST /items/validate em pendências (mensagens em português). */
+export function issuesFromMeli(e: MeliHttpError, names?: AttributeNameLookup): ValidationIssue[] {
+  const fromCauses = e.causes.map((c) => causeIssue(c, c.type === "warning" ? "warning" : "error", names));
   // A recusa (HTTP 4xx) sem nenhuma causa do tipo erro: o motivo real está na mensagem principal
   // da resposta. Sem isso a tela mostraria só avisos e esconderia por que o anúncio foi recusado.
   if (!fromCauses.some((i) => i.severity === "error")) {
@@ -280,10 +290,10 @@ export async function validateDraft(sql: Sql, draftId: number, opts: { remote?: 
         // frete grátis obrigatório). Avisos não impedem a criação: o item é considerado aprovado,
         // com os avisos exibidos. Se o POST /items recusar (400), o job vira FAILED sem risco de duplicar.
         remote = "ok_warnings";
-        issues.push(...e.causes.map((c) => warn(`ML_${(c.code ?? "cause").toUpperCase()}`, c.message ?? c.code ?? "Aviso do Mercado Livre", "mercadolivre")));
+        issues.push(...e.causes.map((c) => causeIssue(c, "warning", attrNames(attrs))));
       } else if (e instanceof MeliHttpError && (e.kind === "bad_request" || e.kind === "forbidden" || e.kind === "auth")) {
         remote = "failed";
-        issues.push(...issuesFromMeli(e));
+        issues.push(...issuesFromMeli(e, attrNames(attrs)));
       } else {
         remote = "unavailable";
         logger.warn("Validação oficial indisponível", { draftId, err: e });

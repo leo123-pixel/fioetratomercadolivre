@@ -39,12 +39,21 @@ function cleanAttributes(attrs: DraftAttributeValue[], adsProductId: number): Dr
   for (const a of attrs) {
     if (!a?.id || a.id === "SELLER_SKU") continue;
     if (a.values?.length) {
-      const values = a.values.filter((v) => v.id || v.name?.trim()).map((v) => (v.id ? { id: v.id } : { name: v.name!.trim() }));
+      // Envia o nome junto com o id: o ML rejeita ids que não resolve na base de atributos
+      // (ex.: ids sugeridos pelo preditor para MODEL/MANUAL_TITLE) quando o nome não vem junto.
+      const values = a.values
+        .filter((v) => v.id || v.name?.trim())
+        .map((v) => {
+          const name = v.name?.trim();
+          if (v.id) return name ? { id: v.id, name } : { id: v.id };
+          return { name: name! };
+        });
       if (values.length) out.push({ id: a.id, values });
       continue;
     }
-    if (a.value_id) out.push({ id: a.id, value_id: a.value_id });
-    else if (a.value_name?.trim()) out.push({ id: a.id, value_name: a.value_name.trim() });
+    const name = a.value_name?.trim();
+    if (a.value_id) out.push(name ? { id: a.id, value_id: a.value_id, value_name: name } : { id: a.id, value_id: a.value_id });
+    else if (name) out.push({ id: a.id, value_name: name });
   }
   out.push({ id: "SELLER_SKU", value_name: sellerSku(adsProductId) });
   return out;

@@ -292,6 +292,8 @@ describe("validação e payload", () => {
     expect(up).not.toHaveProperty("variations");
     expect(up).toMatchObject({ category_id: CATEGORY, price: 109.9, currency_id: "BRL", available_quantity: 2, listing_type_id: "gold_special", condition: "new", buying_mode: "buy_it_now" });
     expect(up.attributes).toContainEqual({ id: "SELLER_SKU", value_name: "ADS-1804" });
+    // id + nome juntos: o ML recusa ids que não resolve (ex.: MODEL/MANUAL_TITLE do preditor) sem o nome.
+    expect(up.attributes).toContainEqual({ id: "OXIDANT_VOLUMES", value_id: "18495513", value_name: "20" });
     expect(up.pictures).toEqual([{ source: "https://cdn.test/products/1804/a.png" }]);
     const classic = buildItemPayload((await loadContext(t.sql(), draftId, "CLASSIC"))!, { pictures: "source" });
     expect(classic.title).toBe("Oxidante Creme L'Oréal 20 Volumes 950ml");
@@ -394,7 +396,7 @@ describe("publicação", () => {
     expect((await getPublicationJob(t.sql(), job.id))!).toMatchObject({ status: "FAILED", errorCode: "validation_error" });
     const d = (await getDraft(t.sql(), draftId))!;
     expect(d.status).toBe("FAILED");
-    expect(d.lastError).toContain("item.price.invalid");
+    expect(d.lastError).toContain("Preço inválido para esta categoria.");
     await expect(updateDraft(t.sql(), draftId, { listingPrice: "120.00" })).resolves.toMatchObject({ status: "DRAFT" });
   });
 
