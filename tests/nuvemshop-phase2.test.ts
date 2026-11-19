@@ -36,6 +36,7 @@ import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
 import { FakeNuvemshop, NS_SECRET, NS_STORE, nsEnv, type FakeProduct } from "./helpers/nuvemshop-mock";
 import { useTestDatabase } from "./helpers/pg";
+import { setAdsClockForTesting } from "@/lib/ads/hours";
 
 /**
  * Fase 2 Nuvemshop: produtos/imagens, preço e estoque automáticos (cotas do Inventory Core), proteção de pedidos,
@@ -49,6 +50,8 @@ let ns: FakeNuvemshop;
 let adsPrices: Record<string, unknown>[];
 /** Saldo ADS ao vivo (GET /estoques); null = ADS fora do ar. */
 let adsStocks: Record<string, unknown>[] | null;
+/** ADS fora do ar para a tabela de preços (503). */
+let adsPricesDown = false;
 const deps = () => ({ fetchImpl: ns.fetch as unknown as typeof fetch, sleep: noSleep, maxRetries: 1 });
 
 beforeEach(() => {
@@ -61,12 +64,14 @@ beforeEach(() => {
   ns.scope = "read_products,write_products,read_orders";
   adsPrices = [];
   adsStocks = null;
+  adsPricesDown = false;
   // ADS simulada: só a tabela de preços (o saldo vem do cache product_stocks nos testes).
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       if (url.origin === ADS_BASE && url.pathname.endsWith("/tabela-precos-itens")) {
+        if (adsPricesDown) return new Response(JSON.stringify({ title: "Service Unavailable" }), { status: 503, headers: { "content-type": "application/json" } });
         const ids = url.searchParams.getAll("ids").map(Number);
         const rows = adsPrices.filter((r) => ids.includes(Number(r.produtoId)));
         return new Response(JSON.stringify({ items: rows, page: 1, pageSize: 100, total: rows.length, hasNext: false }), { status: 200, headers: { "content-type": "application/json" } });
@@ -268,7 +273,7 @@ describe("Produtos, variantes e imagens", () => {
 
 // ---------------------------------------------------------------------------
 describe("Preço automático (regras puras)", () => {
-  const policy = { priceTableCode: "M", branchId: null, marginPct: 0, minPrice: null, rounding: "NONE" as const, promotion: "BLOCK" as const, maxChangePct: 20 };
+  const policy = { priceTableCode: "M", branchId: null, marginPct: 0, minPrice: null, rounding: "NONE" as const, promotion: "BLOCK" as const, maxChangePct: 20, cacheMaxAgeHours: 48 };
   const remote = (price: string | null, promo: string | null = null) => ({ storeId: NS_STORE, productId: "1", variantId: "100", price, promotionalPrice: promo, stockManagement: true, stock: 1, levels: null, sku: "x", updatedAt: null, removed: false, readAt: new Date() });
   const known = (p: string) => ({ status: "KNOWN" as const, price: p, branchId: "01", updatedAt: null });
 
@@ -291,6 +296,9 @@ describe("Preço automático (regras puras)", () => {
     expect(evaluatePrice({ ads: known("0"), remote: remote("10.00"), kit: false, policy }).reasonCode).toBe("ADS_PRICE_ZERO");
     expect(evaluatePrice({ ads: { status: "ERROR", price: null, branchId: null, updatedAt: null, error: "fora" }, remote: remote("10.00"), kit: false, policy }).reasonCode).toBe("ADS_ERROR");
     expect(evaluatePrice({ ads: known("11.00"), remote: remote("10.00"), kit: true, policy }).reasonCode).toBe("KIT");
+    // Preço do banco: dentro do limite de idade vale; desatualizado nunca é aplicado.
+    expect(evaluatePrice({ ads: known("11.00"), remote: remote("10.00"), kit: false, policy, source: { source: "CACHE", fetchedAt: "2026-11-19T10:00:00Z", stale: false } }).decision).toBe("WRITE");
+    expect(evaluatePrice({ ads: known("11.00"), remote: remote("10.00"), kit: false, policy, source: { source: "CACHE", fetchedAt: "2026-11-10T10:00:00Z", stale: true } })).toMatchObject({ decision: "BLOCKED", reasonCode: "ADS_PRICE_STALE" });
   });
 });
 
@@ -318,6 +326,42 @@ describe("Preço automático (fluxo)", () => {
     const rows = await sql().query<{ table: string; price: string }>(`SELECT price_table_code AS table, trim_scale(price)::text AS price FROM product_prices ORDER BY 1`);
     expect(rows).toEqual([{ table: "F", price: "25.5" }, { table: "M", price: "99" }]);
     expect((await getPriceSettings(sql())).priceTableCode).toBe("M");
+  });
+
+  it("ADS desligada: usa o preço da tabela F já gravado no sistema (sem consultar a ADS); desatualizado é bloqueado; ADS com falha no horário cai no banco", async () => {
+    const [{ id: p }] = await sql().query<{ id: number }>(`SELECT id FROM products WHERE ads_product_id = 77`);
+    await sql().execute(
+      `INSERT INTO product_prices (product_id, ads_product_id, branch_id, price_table_code, price, raw_payload, fetched_at) VALUES ($1, 77, '01', 'F', 25.5, '{}'::jsonb, now() - interval '2 hours'),
+         ($1, 77, '01', 'M', 99, '{}'::jsonb, now() - interval '2 hours')`,
+      [p],
+    );
+    // 22h em Campo Grande: ADS fora do horário.
+    setAdsClockForTesting(() => new Date("2026-11-13T02:00:00Z"));
+    await pilot("PRICE");
+    const adsCalls = () => (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) => String(c[0]).includes("tabela-precos")).length;
+    const before = adsCalls();
+    const r = await priceRun();
+    expect(adsCalls()).toBe(before);
+    expect(r.status).toBe("COMPLETED");
+    expect((await items(r.runId!))[0]).toMatchObject({ decision: "WRITE", target: "2890" });
+    const [d] = await sql().query<{ details: { priceSource: string } }>(`SELECT details FROM nuvemshop_sync_items WHERE run_id = $1::uuid`, [r.runId]);
+    expect(d.details.priceSource).toBe("CACHE");
+    await writer();
+    expect(ns.variant(100)!.price).toBe("28.90");
+    // Preço gravado há mais que o limite (48 h): não aplicado.
+    ns.variant(100)!.price = "27.00";
+    await sql().execute(`UPDATE product_prices SET fetched_at = now() - interval '3 days'`);
+    const stale = await priceRun();
+    expect((await items(stale.runId!))[0]).toMatchObject({ decision: "BLOCKED", reasonCode: "ADS_PRICE_STALE" });
+    await writer();
+    expect(ns.variant(100)!.price).toBe("27.00");
+    // No horário, com a ADS fora do ar: usa o banco (se estiver dentro do limite).
+    await sql().execute(`UPDATE product_prices SET fetched_at = now() - interval '1 hour'`);
+    setAdsClockForTesting(() => new Date("2026-11-12T16:00:00Z"));
+    adsPricesDown = true;
+    const fallback = await priceRun();
+    const [f] = await sql().query<{ details: { priceSource: string }; decision: string }>(`SELECT details, decision FROM nuvemshop_sync_items WHERE run_id = $1::uuid`, [fallback.runId]);
+    expect(f).toMatchObject({ decision: "WRITE", details: { priceSource: "CACHE" } });
   });
 
   it("SHADOW não escreve; PILOT escreve só no piloto, relê e confirma; nova execução fica em sincronia", async () => {

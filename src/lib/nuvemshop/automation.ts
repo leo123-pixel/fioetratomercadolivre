@@ -57,6 +57,11 @@ export const pricePolicySchema = z
     promotion: z.enum(["BLOCK", "KEEP"]),
     /** Variação acima deste percentual vai para revisão manual (não é aplicada sozinha). */
     maxChangePct: z.number().min(1).max(500),
+    /**
+     * Fora do horário da ADS (ou com a ADS indisponível) usa o preço da tabela já gravado no sistema
+     * (product_prices), desde que lido há no máximo estas horas. Mais antigo = bloqueado (nunca aplicado).
+     */
+    cacheMaxAgeHours: z.number().int().min(1).max(720),
   })
   .strict();
 export type PricePolicy = z.infer<typeof pricePolicySchema>;
@@ -75,6 +80,7 @@ export const DEFAULT_PRICE_POLICY: PricePolicy = {
   rounding: "NONE",
   promotion: "BLOCK",
   maxChangePct: 20,
+  cacheMaxAgeHours: 48,
 };
 
 export const stockPolicySchema = z

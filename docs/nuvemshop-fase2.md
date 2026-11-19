@@ -105,7 +105,8 @@ campo legado `stock` para escrita.
 
 ## 6. Regras de preço
 
-1. Tabela comercial ADS **F** (FIO & TRATO) por padrão — **diferente da tabela M usada no Mercado Livre**. As duas configurações são independentes (Nuvemshop em `nuvemshop_automation_settings.policy`, ML em `app_settings.price_sync_settings`); o cache `product_prices` guarda cada tabela separada (produto × filial × tabela). Filial opcional; leitura ao vivo (GET), só no horário da ADS.
+1. Tabela comercial ADS **F** (FIO & TRATO) por padrão — **diferente da tabela M usada no Mercado Livre**. As duas configurações são independentes (Nuvemshop em `nuvemshop_automation_settings.policy`, ML em `app_settings.price_sync_settings`); o cache `product_prices` guarda cada tabela separada (produto × filial × tabela). Filial opcional.
+   - **Origem do preço:** no horário da ADS, leitura ao vivo (GET). Fora do horário (ou com a ADS fora do ar) usa o preço da tabela **já gravado no sistema** (`product_prices`), desde que lido há no máximo `cacheMaxAgeHours` (padrão 48 h, configurável no card Preço); mais antigo fica bloqueado (`ADS_PRICE_STALE`) e nunca é aplicado. Cada decisão registra a origem (ADS ao vivo ou banco, com a data da leitura).
 2. Só vínculos CONFIRMED de produto simples; kits bloqueados.
 3. Preço alvo = tabela × (1 + margem) → arredondamento (nenhum, ,90, ,99, inteiro acima) → mínimo.
 4. **Descontos da ADS não são aplicados** (só o preço da tabela; a semântica do desconto não foi validada).
@@ -207,7 +208,7 @@ automações pausadas.
 
 ## 14. Testes executados
 
-- `tests/nuvemshop-phase2.test.ts`: **32 testes**, todos passando, contra a Nuvemshop simulada:
+- `tests/nuvemshop-phase2.test.ts`: **33 testes**, todos passando, contra a Nuvemshop simulada:
   - **Produtos:** criação oculta com estoque 0 e vínculo; não recria; SKU duplicado; criação incerta aplicada (reconciliada pelo SKU, sem duplicar) e não aplicada (bloqueia até reconciliar); edição; publicação com confirmação; variante criada/editada; preço manual recusado sob automação; imagens (adicionar, principal, remover com confirmação); ID de variante alterado → vínculo em revisão; rotas protegidas.
   - **Preço:** margem/arredondamento/mínimo; promoção BLOCK/KEEP; mudança expressiva → revisão → aprovação; tabela incorreta; ADS desconhecida/zero/erro; kit; SHADOW sem escrita; PILOT só no piloto; falha parcial (lote isolado, `success:false`); retry em 5xx; pausa/desativação.
   - **Estoque:** saldo positivo (10/2 → 4); zero; desconhecido; ADS fora do ar; reserva; cotas exclusivas; pedido pendente; baixa ADS confirmada sem baixa dupla; cancelamento; leitura antiga; venda entre cálculo e escrita (SUPERSEDED); venda logo após a escrita; timeout não aplicado / aplicado / valor inesperado (reconciliação trava a variante); multidepósito (escreve só na localização associada; duas localizações bloqueiam); variante sem vínculo; atualização duplicada; dois workers; duas execuções; sem escritor concorrente no ML; núcleo sem escrita remota; canal simulado com automação desligada.

@@ -130,7 +130,7 @@ export async function runDetail(sql: Sql, runId: string) {
   if (!run) return null;
   const items = await sql.query(
     `SELECT i.id::text AS id, i.variant_id::text AS "variantId", v.sku, p.name, i.location_id AS "locationId", i.current_value AS current, i.base_value AS base, i.target_value AS target,
-            i.change_pct AS "changePct", i.decision, i.reason_code AS "reasonCode", i.reason, i.job_id::text AS "jobId", j.status AS "jobStatus"
+            i.change_pct AS "changePct", i.decision, i.reason_code AS "reasonCode", i.reason, i.job_id::text AS "jobId", j.status AS "jobStatus", i.details
      FROM nuvemshop_sync_items i LEFT JOIN nuvemshop_variants v ON v.store_id = i.store_id AND v.variant_id = i.variant_id
      LEFT JOIN nuvemshop_products p ON p.store_id = i.store_id AND p.product_id = i.nuvemshop_product_id
      LEFT JOIN nuvemshop_write_jobs j ON j.id = i.job_id
