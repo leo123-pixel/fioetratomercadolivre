@@ -13,8 +13,8 @@ import { envAutoSyncAllowed, getStockSettings, recordHistory, StockSyncError } f
 import { adsHoursState } from "../ads/hours";
 
 /**
- * Sincronização de PREÇO ADS → Mercado Livre para anúncios legados (criados fora do integrador) já vinculados
- * a um produto da ADS. Manual (simulação + aprovação) ou automática (runAutoPriceSync, quando ativada):
+ * Sincronização de PREÇO ADS → Mercado Livre para os anúncios da conta vinculados a um produto da ADS — legados
+ * (criados fora do integrador) e publicados pelo integrador. Manual (simulação + aprovação) ou automática (runAutoPriceSync, quando ativada):
  *
  *   1. Simulação (somente leitura): consulta ao vivo o preço da tabela configurada (padrão "M") na ADS e o preço
  *      atual no ML; grava uma proposta por anúncio.
@@ -22,7 +22,7 @@ import { adsHoursState } from "../ads/hours";
  *      escrever; escreve só o preço (PUT /items/{id}) e confere o valor no ML depois.
  *
  * Nunca escreve preço ausente/zero, nunca altera anúncio em promoção, kit/pacote, Full encerrado etc.
- * Anúncios publicados pelo integrador ficam de fora: o preço deles é o escolhido no rascunho.
+ * Anúncios publicados pelo integrador também seguem a tabela (o preço do rascunho vale só na publicação).
  */
 
 // ---------------------------------------------------------------------------
@@ -262,17 +262,24 @@ export function buildPriceBody(variationIds: string[], price: string): Record<st
 // Leituras (ADS e ML)
 // ---------------------------------------------------------------------------
 
+/**
+ * Linhas (anúncio/variação) vinculadas a produto ADS, com a mesma resolução do estoque: o anúncio publicado pelo
+ * integrador vale primeiro; sem ele, o vínculo manual/confirmado (que pode ser composição).
+ */
 async function loadLinkedRows(sql: Sql, itemIds?: string[]): Promise<LinkedRow[]> {
   return sql.query<LinkedRow>(
     `SELECT ll.marketplace_item_id AS "itemId", ll.variation_id AS "variationId", ll.title,
-            m.product_id AS "productId", m.ads_product_id AS "adsProductId",
+            COALESCE(il.product_id, m.product_id) AS "productId", COALESCE(il.ads_product_id, m.ads_product_id) AS "adsProductId",
             (SELECT count(*)::int FROM marketplace_mapping_components c WHERE c.mapping_id = m.id) AS components
      FROM legacy_listings ll
-     LEFT JOIN marketplace_product_mappings m ON m.active AND m.mapping_type = 'ITEM'
+     LEFT JOIN LATERAL (SELECT l.id, l.product_id, l.ads_product_id FROM marketplace_listings l
+                        WHERE l.marketplace_item_id = ll.marketplace_item_id AND l.status <> 'deleted' ORDER BY l.id DESC LIMIT 1) il ON true
+     LEFT JOIN marketplace_product_mappings m ON il.id IS NULL AND m.active AND m.mapping_type = 'ITEM'
           AND m.marketplace_item_id = ll.marketplace_item_id AND m.variation_id = ll.variation_id
-     WHERE ll.removed_at IS NULL AND ll.origin = 'EXTERNAL'
+     WHERE ll.removed_at IS NULL
        AND ($1::text[] IS NULL OR ll.marketplace_item_id = ANY($1::text[]))
-       AND EXISTS (SELECT 1 FROM marketplace_product_mappings m2 WHERE m2.active AND m2.mapping_type = 'ITEM' AND m2.marketplace_item_id = ll.marketplace_item_id)
+       AND (EXISTS (SELECT 1 FROM marketplace_listings l2 WHERE l2.marketplace_item_id = ll.marketplace_item_id AND l2.status <> 'deleted')
+            OR EXISTS (SELECT 1 FROM marketplace_product_mappings m2 WHERE m2.active AND m2.mapping_type = 'ITEM' AND m2.marketplace_item_id = ll.marketplace_item_id))
      ORDER BY ll.marketplace_item_id, ll.variation_id`,
     [itemIds?.length ? itemIds : null],
   );
@@ -661,6 +668,12 @@ export async function applyPriceProposals(
       });
       if (ok) {
         await sql.execute(`UPDATE legacy_listings SET price = $2::numeric WHERE marketplace_item_id = $1::text`, [r.itemId, r.proposedPrice]);
+        // Anúncio publicado pelo integrador: o preço vigente passa a ser o aplicado (evita falsa divergência no monitoramento).
+        await sql.execute(
+          `UPDATE marketplace_listings SET price = $2::numeric, remote_price = $2::numeric, updated_at = now()
+           WHERE marketplace_item_id = $1::text AND status <> 'deleted'`,
+          [r.itemId, r.proposedPrice],
+        );
       }
       await recordHistory(sql, {
         type: ok ? "PRICE_APPLIED" : "PRICE_DIVERGED",

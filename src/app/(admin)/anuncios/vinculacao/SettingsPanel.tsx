@@ -198,7 +198,7 @@ export function SettingsPanel(props: {
         )}
       </div>
 
-      <h3>Preço automático (anúncios legados)</h3>
+      <h3>Preço automático (anúncios vinculados)</h3>
       <p className="muted">
         A cada intervalo o sistema compara o preço da tabela {ps.priceTableCode} da ADS com o do Mercado Livre e aplica a diferença, com as mesmas travas da
         aprovação manual: anúncio em promoção, kit, preço ausente ou zerado ficam de fora.

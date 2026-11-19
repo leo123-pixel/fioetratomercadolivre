@@ -653,7 +653,7 @@ export function LinkingPanel(props: {
                         <td colSpan={14}>
                           <ApproveRow
                             itemId={r.marketplaceItemId}
-                            legacy={r.origin === "EXTERNAL"}
+                            withPrice
                             onClose={() => setApproving(null)}
                             onDone={(msg, kind) => {
                               setFeedback({ kind, text: msg });

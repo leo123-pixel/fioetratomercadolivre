@@ -116,9 +116,9 @@ export function PricePanel(props: {
   return (
     <section aria-label="Sincronização de preço" style={{ marginBottom: 24 }}>
       <div className="toolbar" style={{ marginBottom: 12, justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0 }}>Preço dos anúncios legados (ADS → Mercado Livre)</h2>
+        <h2 style={{ margin: 0 }}>Preço dos anúncios (ADS → Mercado Livre)</h2>
         <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={simulate}>
-          {busy === "simulate" ? "Consultando ADS e ML…" : "Simular preços (todos os legados vinculados)"}
+          {busy === "simulate" ? "Consultando ADS e ML…" : "Simular preços (todos os anúncios vinculados)"}
         </button>
       </div>
       <p className="muted">
