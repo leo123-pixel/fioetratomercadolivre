@@ -32,7 +32,17 @@ import { discoverLocations, effectivePolicies, getInventorySettings, type Invent
  */
 const LEASE = "inventory-shadow";
 const CHANNELS = ["mercadolivre", "nuvemshop"] as const;
-const SIMULATED_CHANNELS = new Set(["nuvemshop"]);
+
+/**
+ * Nuvemshop no núcleo (Fase 2): com a automação de estoque Nuvemshop fora de DISABLED e a loja conectada, o canal
+ * deixa de ser simulado — a cota da Nuvemshop é calculada AQUI (planQuotas, cotas exclusivas, folga não exposta) e
+ * gravada como proposta por variante (inventory_sync_proposals, canal nuvemshop). O conector Nuvemshop só lê
+ * essa proposta e escreve pela fila própria; o núcleo continua sem nenhuma escrita remota.
+ */
+async function nuvemshopStockMode(sql: Sql): Promise<string> {
+  const [row] = await sql.query<{ mode: string }>(`SELECT mode FROM nuvemshop_automation_settings WHERE kind = 'STOCK'`).catch(() => []);
+  return row?.mode ?? "DISABLED";
+}
 
 export interface ShadowRunOptions {
   requestedBy: string;
@@ -203,6 +213,9 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
   const nsState = await nsAdapter.state();
   const nsListings = nsState.connected ? await nsAdapter.getChannelInventory() : [];
   const nsMappings = nsState.connected ? await nsAdapter.getProductMappings() : [];
+  const nsMode = nsState.connected ? await nuvemshopStockMode(sql) : "DISABLED";
+  const nsIntegrated = nsState.connected && nsMode !== "DISABLED";
+  const nsWritable = nsIntegrated && (nsMode === "PILOT" || nsMode === "AUTOMATIC");
   const ingest = await ingestMercadoLivreOrders(sql, { settings, correlationId, now });
 
   // Escopo: produtos vinculados a anúncios, com pedidos, com política própria ou já conhecidos do núcleo.
@@ -276,6 +289,8 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
 
   const counters = { pools: 0, reliable: 0, degraded: 0, unknown: 0, blocked: 0, overExposed: 0, snapshotsAccepted: 0, snapshotsIgnoredStale: 0, quotaChanges: 0 };
   const mlQuota = new Map<number, number | null>();
+  const nsQuota = new Map<number, number | null>();
+  const nsProposals: { poolId: string; poolKey: string; productId: number; current: number | null; target: number | null; status: "SHADOW_ONLY" | "BLOCKED" | "IN_SYNC"; reasonCode: string | null; reason: string | null; reliability: string; allowIncrease: boolean; ruleType: string | null }[] = [];
   const proposals: { poolId: string; productId: number; current: number | null; target: number | null; status: "SHADOW_ONLY" | "BLOCKED" | "IN_SYNC"; reasonCode: string | null; reason: string | null }[] = [];
   let processed = 0;
   for (const productId of productIds) {
@@ -288,7 +303,7 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
       const snap = snapshotFor(productId, branches, cache, live.get(productId));
       const pool = await ensurePool(sql, sku, w);
       const outcome = await withPoolLock(sql, pool.poolKey, (tx) =>
-        evaluatePool(tx, { runId, correlationId, now, sku, pool: pool.id, warehouse: w, channelsHere, branches, snap, settings, eff, listings, nsListings, nsConnected: nsState.connected, unmappedByItem, legacyPending: legacyPending.get(productId) ?? 0, legacyWindowDays: stockSettings.pendingOrderWindowDays }),
+        evaluatePool(tx, { runId, correlationId, now, sku, pool: pool.id, warehouse: w, channelsHere, branches, snap, settings, eff, listings, nsListings, nsConnected: nsState.connected, nsIntegrated, nsWritable, unmappedByItem, legacyPending: legacyPending.get(productId) ?? 0, legacyWindowDays: stockSettings.pendingOrderWindowDays }),
       );
       counters.pools++;
       counters[outcome.position.reliability === "RELIABLE" ? "reliable" : outcome.position.reliability === "DEGRADED" ? "degraded" : outcome.position.reliability === "UNKNOWN" ? "unknown" : "blocked"]++;
@@ -308,6 +323,23 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
           status: mlItem.desired === null ? "BLOCKED" : mlItem.desired === mlItem.confirmed ? "IN_SYNC" : "SHADOW_ONLY",
           reasonCode: mlItem.desired === null ? (outcome.position.reliability === "BLOCKED" ? "POOL_BLOCKED" : "STOCK_UNKNOWN") : mlItem.status,
           reason: mlItem.reason ?? (outcome.position.reasons[0] ?? null),
+        });
+      }
+      const nsItem = nsIntegrated ? outcome.plan.items.find((i) => i.channel === "nuvemshop") : undefined;
+      if (nsItem) {
+        nsQuota.set(productId, nsItem.desired);
+        nsProposals.push({
+          poolId: pool.id,
+          poolKey: pool.poolKey,
+          productId,
+          current: nsItem.confirmed,
+          target: nsItem.desired,
+          status: nsItem.desired === null ? "BLOCKED" : nsItem.desired === nsItem.confirmed ? "IN_SYNC" : "SHADOW_ONLY",
+          reasonCode: nsItem.desired === null ? (outcome.position.reliability === "BLOCKED" ? "POOL_BLOCKED" : "STOCK_UNKNOWN") : nsItem.status,
+          reason: nsItem.reason ?? (outcome.position.reasons[0] ?? null),
+          reliability: outcome.position.reliability,
+          allowIncrease: outcome.position.allowIncrease,
+          ruleType: eff.policy.rules.find((r) => r.channel === "nuvemshop")?.type ?? null,
         });
       }
     }
@@ -351,6 +383,32 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
     );
   }
 
+  // Nuvemshop: tradução da cota (unidades físicas por produto) em quantidade por variante — vários anúncios/variantes
+  // do mesmo SKU físico nunca multiplicam a cota (sem SPLIT_EVEN a variante fica bloqueada), kits pela composição.
+  if (nsIntegrated) {
+    const nsPools = nsListings.filter((l) => l.components.length && l.status !== "closed");
+    const nsTargets = new Map(distributeWithinChannel(nsQuota, nsPools.map((l) => ({ key: l.key, components: l.components, maxQuantity: l.maxQuantity })), splitModeOf).map((t) => [t.key, t]));
+    for (const p of nsProposals) {
+      const mine = nsPools.filter((l) => l.components.some((c) => c.productId === p.productId));
+      const details = mine.map((l) => ({ key: l.key, itemIds: l.itemIds, announced: l.announced, target: nsTargets.get(l.key)?.target ?? null, reasonCode: nsTargets.get(l.key)?.reasonCode ?? null, components: l.components }));
+      await sql.execute(
+        `INSERT INTO inventory_sync_proposals (run_id, pool_id, channel, current_quantity, target_quantity, direction, status, reason_code, reason, details)
+         VALUES ($1::uuid, $2::bigint, 'nuvemshop', $3::int, $4::int, $5::text, $6::text, $7::text, $8::text, $9::jsonb)`,
+        [
+          runId,
+          p.poolId,
+          p.current,
+          p.target,
+          p.target === null || p.current === null ? null : p.target > p.current ? "INCREASE" : p.target < p.current ? "DECREASE" : "NONE",
+          p.status,
+          p.reasonCode,
+          p.reason,
+          JSON.stringify({ listings: details, poolKey: p.poolKey, reliability: p.reliability, allowIncrease: p.allowIncrease, ruleType: p.ruleType, nuvemshopMode: nsMode }),
+        ],
+      );
+    }
+  }
+
   // Compromissos que exigem reconciliação (um alerta por pedido).
   const reconcile = await sql.query<{ externalOrderId: string; channel: string; productId: number; poolId: string; reason: string | null; quantity: string }>(
     `SELECT external_order_id AS "externalOrderId", channel, product_id AS "productId", pool_id::text AS "poolId", state_reason AS reason, trim_scale(quantity)::text AS quantity
@@ -385,6 +443,7 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
       discrepancies: disc,
       outboxSuppressed: outbox.suppressed,
       proposals: { total: proposals.length, shadowOnly: proposals.filter((p) => p.status === "SHADOW_ONLY").length, blocked: proposals.filter((p) => p.status === "BLOCKED").length },
+      nuvemshop: { mode: nsMode, integrated: nsIntegrated, proposals: nsProposals.length },
       locations: locations.map((l: LocationRow) => ({ branchId: l.branchId, warehouse: l.warehouseCode, status: l.status })),
       settings: { adsDeductsOnOrderCreated: settings.adsDeductsOnOrderCreated, adsReflectedStatuses: settings.adsReflectedStatuses },
     },
@@ -407,6 +466,10 @@ interface PoolContext {
   /** Variantes Nuvemshop vinculadas (leitura do catálogo importado). */
   nsListings: ChannelListingInventory[];
   nsConnected: boolean;
+  /** Automação de estoque Nuvemshop fora de DISABLED: o canal deixa de ser simulado. */
+  nsIntegrated: boolean;
+  /** Automação em PILOT/AUTOMATIC: o canal é alcançável (escritas pelo conector). */
+  nsWritable: boolean;
   unmappedByItem: Map<string, number>;
   legacyPending: number;
   legacyWindowDays: number;
@@ -507,8 +570,8 @@ async function evaluatePool(tx: Sql, c: PoolContext): Promise<PoolOutcome> {
     ch === "mercadolivre"
       ? { channel: ch, confirmed: exposureMl.confirmed, reachable: true, simulated: false }
       : ch === "nuvemshop" && c.nsConnected
-        ? { channel: ch, confirmed: nsObserved, reachable: false, simulated: true }
-        : { channel: ch, confirmed: 0, reachable: false, simulated: SIMULATED_CHANNELS.has(ch) },
+        ? { channel: ch, confirmed: nsObserved, reachable: c.nsWritable, simulated: !c.nsIntegrated }
+        : { channel: ch, confirmed: 0, reachable: false, simulated: ch === "nuvemshop" },
   );
   const rules = c.eff.policy.rules.filter((r) => c.channelsHere.includes(r.channel));
   const plan = planQuotas(position.safeSellable, { rules, remainderMode: c.eff.policy.remainderMode }, exposures, { allowIncrease: position.allowIncrease });
@@ -528,8 +591,8 @@ async function evaluatePool(tx: Sql, c: PoolContext): Promise<PoolOutcome> {
       `SELECT desired_quantity AS desired, confirmed_quantity AS confirmed, status, version FROM inventory_channel_allocations WHERE pool_id = $1::bigint AND channel = $2::text FOR UPDATE`,
       [row.id, item.channel],
     );
-    const simulated = SIMULATED_CHANNELS.has(item.channel);
-    const confirmedAt = item.channel === "mercadolivre" ? exposureMl.readAt : null;
+    const simulated = item.channel === "nuvemshop" && !c.nsIntegrated;
+    const confirmedAt = item.channel === "mercadolivre" ? exposureMl.readAt : item.channel === "nuvemshop" && c.nsIntegrated ? (c.nsListings.find((l) => l.components.some((x) => x.productId === productId))?.readAt ?? null) : null;
     if (prev && prev.desired === item.desired && prev.confirmed === item.confirmed && prev.status === item.status) continue;
     await tx.execute(
       `INSERT INTO inventory_channel_allocations (pool_id, channel, desired_quantity, confirmed_quantity, confirmed_at, pending_quantity, status, simulated, policy_id, policy_version, computed_at)

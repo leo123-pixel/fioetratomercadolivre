@@ -19,7 +19,8 @@ import { InventoryError } from "./inventory/mode";
 import { NuvemshopApiError } from "./nuvemshop/client";
 import { ImportConflictError } from "./nuvemshop/import";
 import { NuvemshopMappingError } from "./nuvemshop/mapping";
-import { NuvemshopWriteBlockedError } from "./nuvemshop/read-only";
+import { NuvemshopWriteBlockedError } from "./nuvemshop/write-gate";
+import { AutomationError } from "./nuvemshop/automation";
 import { NuvemshopNotConnectedError, OtherStoreConnectedError } from "./nuvemshop/store";
 
 /** Contexto das rotas dinâmicas do App Router (ex.: { params: Promise<{ id: string }> }). */
@@ -66,6 +67,7 @@ export function adminHandler<C = unknown>(handler: (req: NextRequest, ctx: C) =>
       if (err instanceof StockSyncError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
       if (err instanceof InventoryError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
       if (err instanceof NuvemshopWriteBlockedError) return jsonNoStore({ error: err.code, message: err.message }, 403);
+      if (err instanceof AutomationError) return jsonNoStore({ error: err.code, message: err.message, details: err.details ?? null }, err.status);
       if (err instanceof NuvemshopNotConnectedError || err instanceof OtherStoreConnectedError) return jsonNoStore({ error: err.code, message: err.message }, 409);
       if (err instanceof ImportConflictError) return jsonNoStore({ error: err.code, message: err.message, activeJobId: err.activeJobId }, 409);
       if (err instanceof NuvemshopMappingError) return jsonNoStore({ error: err.code, message: err.message }, 409);

@@ -5,7 +5,7 @@ import { upsertLocations } from "./catalog";
 import { NuvemshopApiError, type NsLocation, type NsStore } from "./client";
 import { isNuvemshopConfigured } from "./env";
 import { missingScopes } from "./oauth";
-import { nuvemshopReadOnlyState } from "./read-only";
+import { hasScope, nuvemshopWriteEnv } from "./write-gate";
 import { clientForConnectedStore, getLatestStore, recordStoreError, updateStoreInfo, type StoreRow } from "./store";
 
 export interface ConnectionCheck {
@@ -76,8 +76,17 @@ export async function checkConnection(sql: Sql, deps: { fetchImpl?: typeof fetch
 
 export interface ConnectionView {
   configured: boolean;
-  readOnly: ReturnType<typeof nuvemshopReadOnlyState>;
-  store: (Omit<StoreRow, "hasToken"> & { missingScopes: string[] }) | null;
+  /** Escrita (Fase 2): ligada só com NUVEMSHOP_WRITE_ENABLED=true. */
+  write: ReturnType<typeof nuvemshopWriteEnv>;
+  store: (Omit<StoreRow, "hasToken"> & { missingScopes: string[]; missingPhase2Scopes: string[] }) | null;
+}
+
+/** Escopos da Fase 2: write_products (catálogo, preço e estoque) e read_orders (proteção de pedidos pendentes). */
+export function missingPhase2Scopes(granted: string | null): string[] {
+  const out: string[] = [];
+  if (!hasScope(granted, "write_products")) out.push("write_products");
+  if (!hasScope(granted, "read_orders", "write_orders")) out.push("read_orders");
+  return out;
 }
 
 /** Estado para o painel (sem token, sem dados pessoais do lojista). */
@@ -85,7 +94,7 @@ export async function connectionView(sql: Sql): Promise<ConnectionView> {
   const store = await getLatestStore(sql);
   return {
     configured: isNuvemshopConfigured(),
-    readOnly: nuvemshopReadOnlyState(),
-    store: store ? (({ hasToken: _h, ...s }) => ({ ...s, missingScopes: missingScopes(s.grantedScopes) }))(store) : null,
+    write: nuvemshopWriteEnv(),
+    store: store ? (({ hasToken: _h, ...s }) => ({ ...s, missingScopes: missingScopes(s.grantedScopes), missingPhase2Scopes: missingPhase2Scopes(s.grantedScopes) }))(store) : null,
   };
 }

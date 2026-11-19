@@ -24,6 +24,7 @@ interface Store {
   lastSuccessfulCheckAt: string | null;
   lastError: string | null;
   missingScopes: string[];
+  missingPhase2Scopes?: string[];
 }
 
 interface Job {
@@ -69,7 +70,7 @@ interface Summary {
 
 interface View {
   configured: boolean;
-  readOnly: { readOnly: true; configured: string | null; warning: string | null };
+  write: { enabled: boolean; configured: string | null; warning: string | null };
   store: Store | null;
 }
 
@@ -195,7 +196,7 @@ export function NuvemshopDashboard({ summary, view, jobs: initialJobs, callbackP
           <code>{callbackPath}</code>) na Vercel e faça novo deploy.
         </div>
       )}
-      {view.readOnly.warning && <div className="alert warn">{view.readOnly.warning}</div>}
+      {view.write.warning && <div className="alert info">{view.write.warning}. Leitura, vinculação e simulações continuam funcionando.</div>}
 
       <section className="card">
         <div className="status-row">
@@ -245,6 +246,7 @@ export function NuvemshopDashboard({ summary, view, jobs: initialJobs, callbackP
           <p className="muted">Nenhuma loja conectada.</p>
         )}
         {store?.missingScopes?.length ? <div className="alert warn" style={{ marginTop: 12 }}>Permissões faltando: {store.missingScopes.join(", ")}</div> : null}
+        {store?.missingPhase2Scopes?.length ? <div className="alert info" style={{ marginTop: 12 }}>Para a Fase 2 (produtos, preço, estoque e proteção de pedidos) faltam: {store.missingPhase2Scopes.join(", ")}. Ajuste os escopos no Portal de Parceiros e reconecte a loja.</div> : null}
         {store?.lastError && store.connectionStatus !== "DISCONNECTED" ? <div className="alert error" style={{ marginTop: 12 }}>{store.lastError}</div> : null}
         <div className="toolbar" style={{ marginTop: 16 }}>
           {(!store || store.connectionStatus !== "ACTIVE") && (

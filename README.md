@@ -5,6 +5,7 @@
 - **Fase 3:** preparação, validação e publicação **manual** de anúncios no Mercado Livre. Veja [Fase 3](#fase-3--preparação-validação-e-publicação-manual-no-mercado-livre).
 - **Inventory Core — Fase 0 (modo sombra):** núcleo central de estoque multicanal em `/estoque/controle-central`, somente leitura/simulação. Veja [docs/inventory-core-fase0.md](docs/inventory-core-fase0.md).
 - **Nuvemshop — Fase 1 (somente leitura):** OAuth, importação de catálogo/variantes/estoque, vinculação com a ADS e leitura pelo Inventory Core em `/nuvemshop`. Veja [docs/nuvemshop-fase1.md](docs/nuvemshop-fase1.md).
+- **Nuvemshop — Fase 2:** produtos/variantes/imagens, preço ADS → Nuvemshop e estoque pelas cotas do Inventory Core, proteção de pedidos pendentes, webhooks, fila de escritas e painel `/nuvemshop/automacoes` (tudo desligado até a ativação). Veja [docs/nuvemshop-fase2.md](docs/nuvemshop-fase2.md).
 - **Fora do escopo por enquanto:** alteração automática de preço/estoque após a publicação, pedidos, mensagens e campanhas.
 
 Stack: Next.js 15 (App Router) · TypeScript · Prisma + PostgreSQL · Vercel · Vitest.

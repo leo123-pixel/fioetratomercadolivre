@@ -18,7 +18,7 @@ import { createImportJob, ImportConflictError, NS_LEASE, processNuvemshopJobs } 
 import { bulkConfirmSafe, confirmMapping, NuvemshopMappingError, refreshMappingSuggestions, rejectSuggestion, revokeMapping } from "@/lib/nuvemshop/mapping";
 import { handleCallback, startAuthorization } from "@/lib/nuvemshop/oauth";
 import { listVariants } from "@/lib/nuvemshop/queries";
-import { assertNuvemshopWriteAllowed, NuvemshopWriteBlockedError, nuvemshopReadOnlyState } from "@/lib/nuvemshop/read-only";
+import { issueWritePermit, NuvemshopWriteBlockedError, nuvemshopWriteEnv, WritePermit } from "@/lib/nuvemshop/write-gate";
 import { disconnectStore, getConnectedStore } from "@/lib/nuvemshop/store";
 import { updateStockSettings } from "@/lib/stock/settings";
 import { BASE, makeRequest } from "./helpers/fixtures";
@@ -440,17 +440,26 @@ describe("Infraestrutura: limite, retentativa, falhas, concorrência e idempotê
 });
 
 // ---------------------------------------------------------------------------
-describe("Somente leitura e rotas", () => {
-  it("portão de escrita recusa sempre, mesmo com NUVEMSHOP_PHASE1_READ_ONLY diferente de true", () => {
-    process.env.NUVEMSHOP_PHASE1_READ_ONLY = "false";
-    expect(nuvemshopReadOnlyState()).toMatchObject({ readOnly: true, warning: expect.any(String) });
-    expect(() => assertNuvemshopWriteAllowed("PUT /products/1/variants/stock")).toThrow(NuvemshopWriteBlockedError);
+describe("Portão de escrita e rotas", () => {
+  it("portão: sem NUVEMSHOP_WRITE_ENABLED=true, sem write_products ou com emergência ativa recusa; o cliente recusa escrita sem permissão", async () => {
+    const store = { storeId: NS_STORE, grantedScopes: "read_products,write_products" };
+    expect(nuvemshopWriteEnv({})).toMatchObject({ enabled: false, warning: expect.any(String) });
+    await expect(issueWritePermit(sql(), store, "STOCK", "PATCH /products/stock-price")).rejects.toBeInstanceOf(NuvemshopWriteBlockedError);
+    process.env.NUVEMSHOP_WRITE_ENABLED = "true";
+    await expect(issueWritePermit(sql(), { ...store, grantedScopes: "read_products" }, "PRICE", "x")).rejects.toThrow(/write_products/);
+    await sql().execute(`UPDATE nuvemshop_emergency_stop SET active = true, reason = 'teste'`);
+    await expect(issueWritePermit(sql(), store, "CATALOG", "x")).rejects.toThrow(/emergência/);
+    await sql().execute(`UPDATE nuvemshop_emergency_stop SET active = false`);
+    const permit = await issueWritePermit(sql(), store, "STOCK", "x");
+    expect(permit).toBeInstanceOf(WritePermit);
+    expect(() => new WritePermit(Symbol("falso"), NS_STORE, "STOCK")).toThrow();
     const c = new NuvemshopApiClient({ storeId: NS_STORE, accessToken: NS_TOKEN, env: { apiBaseUrl: "https://api.tiendanube.com/2025-03", userAgent: "T (t)" }, fetchImpl: ns.fetch });
-    expect(() => c.write("PUT", "/products/1/variants")).toThrow(NuvemshopWriteBlockedError);
+    await expect(c.send({} as WritePermit, "PUT", "/products/1/variants/1", {}, { idempotent: true })).rejects.toBeInstanceOf(NuvemshopWriteBlockedError);
+    await expect(c.send(await issueWritePermit(sql(), { ...store, storeId: "999" }, "STOCK", "x"), "PUT", "/products/1", {}, { idempotent: true })).rejects.toThrow(/outra loja/);
     expect(ns.calls).toHaveLength(0);
   });
 
-  it("varredura: nenhum módulo da Fase 1 faz POST/PUT/PATCH/DELETE na API da Nuvemshop (só a troca do code no servidor de autorização)", () => {
+  it("varredura: escrita HTTP só pelo cliente com permissão do portão (e a troca do code no servidor de autorização)", () => {
     const roots = ["src/lib/nuvemshop", "src/app/api/nuvemshop", "src/app/api/auth/nuvemshop", "src/app/api/webhooks/nuvemshop"];
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -467,6 +476,10 @@ describe("Somente leitura e rotas", () => {
       const writes = text.match(/method:\s*["'](PUT|POST|PATCH|DELETE)["']/g) ?? [];
       const allowed = f.replace(/\\/g, "/").endsWith("src/lib/nuvemshop/oauth.ts") ? 1 : 0;
       expect({ file: f, writes: writes.length }).toEqual({ file: f, writes: allowed });
+      // Quem chama client.send() precisa obter a permissão do portão no mesmo módulo.
+      if (/\.send(<[^>]*>)?\(\s*permit/.test(text)) expect({ file: f, gate: /issueWritePermit\(/.test(text) }).toEqual({ file: f, gate: true });
+      // Ninguém chama a API da Nuvemshop por fetch direto (só pelo cliente).
+      expect({ file: f, fetch: /fetch\(\s*["'`]https:\/\/api\.(tiendanube|nuvemshop)/.test(text) }).toEqual({ file: f, fetch: false });
     }
   });
 

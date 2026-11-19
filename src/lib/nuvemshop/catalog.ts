@@ -193,7 +193,7 @@ export interface UpsertResult {
  * Variantes do produto ausentes do payload completo são marcadas REMOVED (nunca apagadas): os vínculos
  * delas vão para revisão pelo motor de vinculação, não são removidos automaticamente.
  */
-export async function upsertProduct(tx: Sql, storeId: string, jobId: string, p: MappedProduct, variants: MappedVariant[], now: Date): Promise<UpsertResult> {
+export async function upsertProduct(tx: Sql, storeId: string, jobId: string | null, p: MappedProduct, variants: MappedVariant[], now: Date): Promise<UpsertResult> {
   const [prev] = await tx.query<{ hash: string; status: string }>(`SELECT payload_hash AS hash, sync_status AS status FROM nuvemshop_products WHERE store_id = $1 AND product_id = $2::bigint`, [storeId, p.productId]);
   const fullHash = sha256Hex(p.hash + JSON.stringify(variants.map((v) => v.raw)));
   await tx.execute(

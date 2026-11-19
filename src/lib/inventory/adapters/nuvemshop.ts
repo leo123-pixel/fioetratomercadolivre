@@ -204,8 +204,8 @@ export class NuvemshopInventoryAdapter implements InventoryChannelAdapter {
   validateInventoryCapability(l: Pick<ChannelListingInventory, "status" | "logisticType" | "components">): CapabilityResult {
     if (l.status === "closed") return { managedByAds: true, writableByApi: false, code: "NOT_ACTIVE", reason: "Variante ou produto removido na Nuvemshop" };
     if (!l.components.length) return { managedByAds: true, writableByApi: false, code: "NOT_LINKED", reason: "Sem vínculo confirmado com produto ADS" };
-    // Fase 1: leitura apenas — a escrita na Nuvemshop está bloqueada.
-    return { managedByAds: true, writableByApi: false, code: "READ_ONLY_PHASE1", reason: "Nuvemshop em somente leitura (Fase 1)" };
+    // Fase 2: a escrita é feita pelo conector Nuvemshop (fila própria, portão e verificação), nunca pelo núcleo.
+    return { managedByAds: true, writableByApi: true, code: null, reason: null };
   }
 
   async getChannelInventory(opts: { productIds?: number[] } = {}): Promise<ChannelListingInventory[]> {
