@@ -4,12 +4,12 @@ import { GET as nsAdsGet, POST as nsAdsPost } from "@/app/api/nuvemshop/orders/[
 import { GET as nsOrdersGet } from "@/app/api/nuvemshop/orders/route";
 import { getAdsOrderSettings, settingsKey, type AdsOrderSettings } from "@/lib/ads/commercial";
 import { updateInventorySettings } from "@/lib/inventory/settings";
-import { resetNuvemshopThrottleForTests } from "@/lib/nuvemshop/client";
+import { NuvemshopApiError, resetNuvemshopThrottleForTests } from "@/lib/nuvemshop/client";
 import { buildNsAdsOrder, parseNsBilling, reconcileNsSubmission, sendNsOrderToAds, ufOf } from "@/lib/nuvemshop/ads-orders";
 import { confirmMapping } from "@/lib/nuvemshop/mapping";
 import { createImportJob, processNuvemshopJobs } from "@/lib/nuvemshop/import";
 import { handleCallback, startAuthorization } from "@/lib/nuvemshop/oauth";
-import { confirmAdsReflection, upsertOrder } from "@/lib/nuvemshop/orders";
+import { confirmAdsReflection, invalidFieldsOf, ORDER_FIELDS, upsertOrder, withFieldFallback } from "@/lib/nuvemshop/orders";
 import { handlePrivacyWebhook } from "@/lib/nuvemshop/webhooks";
 import { BASE, makeRequest } from "./helpers/fixtures";
 import { adminCookies } from "./helpers/meli-mock";
@@ -405,5 +405,33 @@ describe("pedido Nuvemshop → ADS", () => {
     await post("5001", { action: "refresh" });
     await handlePrivacyWebhook(sql(), "store/redact", { store_id: NS_STORE });
     expect((await sql().query(`SELECT 1 FROM nuvemshop_order_billing`)).length).toBe(0);
+  });
+});
+
+describe("filtro fields da Nuvemshop", () => {
+  it("não pede shipping_cost_customer (recusado pela Nuvemshop em produção)", () => {
+    expect(ORDER_FIELDS.split(",")).not.toContain("shipping_cost_customer");
+  });
+
+  it("repete a leitura uma vez sem os campos recusados", async () => {
+    const err = new NuvemshopApiError("not_found", "Nuvemshop respondeu 404 (Not Found — Invalid fields for this resource: b, c)", 404);
+    expect(invalidFieldsOf(err)).toEqual(["b", "c"]);
+    const calls: string[] = [];
+    const out = await withFieldFallback("a,b,c,d", async (fields) => {
+      calls.push(fields);
+      if (calls.length === 1) throw err;
+      return fields;
+    });
+    expect(out).toBe("a,d");
+    expect(calls).toEqual(["a,b,c,d", "a,d"]);
+  });
+
+  it("não mascara outros erros nem repete sem mudar os campos", async () => {
+    const other = new NuvemshopApiError("server", "Nuvemshop respondeu 500", 500);
+    await expect(withFieldFallback("a,b", async () => { throw other; })).rejects.toBe(other);
+    const unknownField = new NuvemshopApiError("not_found", "Invalid fields for this resource: z", 404);
+    let n = 0;
+    await expect(withFieldFallback("a,b", async () => { n++; throw unknownField; })).rejects.toBe(unknownField);
+    expect(n).toBe(1);
   });
 });

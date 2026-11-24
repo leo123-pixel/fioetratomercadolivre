@@ -13,7 +13,7 @@ import { logger, redactString } from "../logger";
 import { maskDocument, missingBillingFields, validDocument, type BillingData, type StoredBilling } from "../marketplace/billing";
 import type { Sql } from "../sql";
 import { NuvemshopApiError, type NuvemshopApiClient } from "./client";
-import { commitmentFromStates, ORDER_FIELDS, upsertOrder, type NsOrder, type OrderLine } from "./orders";
+import { commitmentFromStates, upsertOrder, type NsOrder, type OrderLine } from "./orders";
 
 /**
  * Pedidos Nuvemshop → ADS (envio MANUAL, mesmas travas do Mercado Livre — ver ads/order-submission.ts):
@@ -32,27 +32,6 @@ import { commitmentFromStates, ORDER_FIELDS, upsertOrder, type NsOrder, type Ord
  */
 export const externalIdForNsOrder = (orderId: string) => `N${orderId}`;
 
-export const BILLING_FIELDS = [
-  "contact_identification",
-  "contact_name",
-  "contact_email",
-  "contact_phone",
-  "billing_name",
-  "billing_phone",
-  "billing_address",
-  "billing_number",
-  "billing_floor",
-  "billing_locality",
-  "billing_zipcode",
-  "billing_city",
-  "billing_province",
-  "billing_country",
-  "billing_customer_type",
-  "billing_business_name",
-  "billing_state_registration",
-  "billing_document_type",
-  "shipping_address",
-].join(",");
 
 // ---------------------------------------------------------------------------------------------------------------
 // Dados fiscais do comprador
@@ -188,7 +167,9 @@ export async function chooseNsBillingCity(sql: Sql, storeId: string, orderId: st
 export async function refreshNsOrderForAds(sql: Sql, client: NuvemshopApiClient, storeId: string, orderId: string): Promise<{ order: NsOrder; billing: StoredBilling }> {
   let data: NsOrder & Record<string, unknown>;
   try {
-    data = (await client.get<NsOrder & Record<string, unknown>>(`/orders/${orderId}`, { fields: `${ORDER_FIELDS},${BILLING_FIELDS}` })).data;
+    // Leitura completa (sem `fields`): a Nuvemshop recusa alguns campos no filtro (ex.: shipping_cost_customer,
+    // 500 no pedido avulso) e o operador precisa de todos os valores. Só os campos de parseNsBilling são gravados.
+    data = (await client.get<NsOrder & Record<string, unknown>>(`/orders/${orderId}`)).data;
   } catch (err) {
     if (err instanceof NuvemshopApiError && err.kind === "not_found") throw new SubmissionError("order_not_found", "Pedido não encontrado na Nuvemshop");
     throw err;
