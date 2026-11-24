@@ -13,7 +13,7 @@ import { logger, redactString } from "../logger";
 import { maskDocument, missingBillingFields, validDocument, type BillingData, type StoredBilling } from "../marketplace/billing";
 import type { Sql } from "../sql";
 import { NuvemshopApiError, type NuvemshopApiClient } from "./client";
-import { commitmentFromStates, upsertOrder, type NsOrder, type OrderLine } from "./orders";
+import { commitmentFromStates, money, upsertOrder, type NsOrder, type OrderLine } from "./orders";
 
 /**
  * Pedidos Nuvemshop → ADS (envio MANUAL, mesmas travas do Mercado Livre — ver ads/order-submission.ts):
@@ -166,17 +166,71 @@ export async function chooseNsBillingCity(sql: Sql, storeId: string, orderId: st
  */
 export async function refreshNsOrderForAds(sql: Sql, client: NuvemshopApiClient, storeId: string, orderId: string): Promise<{ order: NsOrder; billing: StoredBilling }> {
   let data: NsOrder & Record<string, unknown>;
+  // Leitura completa (sem `fields`: a Nuvemshop recusa alguns campos no filtro). O frete do comprador fica nos
+  // fulfillment orders (aggregates); se o agregado falhar, lê o pedido sem ele. Só parseNsBilling é gravado.
+  const read = (query?: Record<string, string>) => client.get<NsOrder & Record<string, unknown>>(`/orders/${orderId}`, query).then((r) => r.data);
   try {
-    // Leitura completa (sem `fields`): a Nuvemshop recusa alguns campos no filtro (ex.: shipping_cost_customer,
-    // 500 no pedido avulso) e o operador precisa de todos os valores. Só os campos de parseNsBilling são gravados.
-    data = (await client.get<NsOrder & Record<string, unknown>>(`/orders/${orderId}`)).data;
+    data = await read({ aggregates: "fulfillment_orders" }).catch((err) => {
+      if (err instanceof NuvemshopApiError && err.kind === "not_found") throw err;
+      logger.warn("Nuvemshop: pedido com fulfillment_orders falhou; lendo sem o agregado", { orderId, err: (err as Error).message });
+      return read();
+    });
   } catch (err) {
     if (err instanceof NuvemshopApiError && err.kind === "not_found") throw new SubmissionError("order_not_found", "Pedido não encontrado na Nuvemshop");
     throw err;
   }
+  const shipping = nsShippingCost(data);
+  if (shipping.source !== "order_field") logger.info("Nuvemshop: frete do comprador", { orderId, source: shipping.source, value: shipping.value });
+  data = { ...data, shipping_cost_customer: shipping.value };
   await upsertOrder(sql, storeId, data, "MANUAL");
   const billing = await saveNsBilling(sql, storeId, orderId, parseNsBilling(data));
   return { order: data, billing };
+}
+
+/** Valor Money da API: número, texto ou objeto {value|amount}. */
+function moneyValue(v: unknown): number | null {
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return money(o.value ?? o.amount ?? null);
+  }
+  return money(v);
+}
+
+/** Procura `consumer_cost` dentro de um fulfillment order (o caminho exato varia: shipping.option, shipping...). */
+function findConsumerCost(v: unknown, depth = 0): number | null {
+  if (!v || typeof v !== "object" || depth > 4) return null;
+  const o = v as Record<string, unknown>;
+  if ("consumer_cost" in o) return moneyValue(o.consumer_cost);
+  for (const child of Object.values(o)) {
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      const found = findConsumerCost(child, depth + 1);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/** Desconto total do pedido: `discount` é o total; em pedidos antigos só vêm cupom + meio de pagamento. */
+export function nsDiscountTotal(o: { discount?: unknown; discount_coupon?: unknown; discount_gateway?: unknown }): number {
+  return Math.max(money(o.discount) ?? 0, round2((money(o.discount_coupon) ?? 0) + (money(o.discount_gateway) ?? 0)));
+}
+
+/**
+ * Frete pago pelo comprador. Na API 2025-03 o pedido não traz mais esse valor: ele fica em cada fulfillment order
+ * (`consumer_cost`, com aggregates=fulfillment_orders). Sem isso, usa o campo antigo shipping_cost_customer e, por
+ * último, a identidade documentada total = subtotal − desconto + frete.
+ */
+export function nsShippingCost(o: Record<string, unknown>): { value: number | null; source: "fulfillment" | "order_field" | "derived" | null } {
+  const fulfillments = Array.isArray(o.fulfillments) ? o.fulfillments : [];
+  const costs = fulfillments.map((f) => findConsumerCost(f)).filter((c): c is number => c !== null);
+  if (costs.length) return { value: round2(costs.reduce((a, c) => a + c, 0)), source: "fulfillment" };
+  const field = money(o.shipping_cost_customer);
+  if (field !== null) return { value: field, source: "order_field" };
+  const total = money(o.total);
+  const subtotal = money(o.subtotal);
+  if (total === null || subtotal === null) return { value: null, source: null };
+  const derived = round2(total - subtotal + nsDiscountTotal(o));
+  return derived >= 0 ? { value: derived, source: "derived" } : { value: null, source: null };
 }
 
 /** Contexto do cadastro de cliente ADS para um pedido Nuvemshop (histórico e município nas tabelas do canal). */
@@ -261,6 +315,7 @@ export async function buildNsAdsOrder(sql: Sql, storeId: string, orderId: string
   if (o.paymentStatus !== "paid") block("payment_not_paid", `Pagamento não confirmado na Nuvemshop (situação: ${o.paymentStatus ?? "desconhecida"})`);
   if (o.adsConfirmedAt) block("ads_confirmed_manually", `Baixa na ADS já confirmada manualmente${o.adsReference ? ` (referência ${o.adsReference})` : ""}: o pedido provavelmente já foi lançado no ADSNET`);
   if (totals.nsTotal === null || totals.nsSubtotal === null) block("values_missing", "Valores do pedido ainda não lidos: clique em \"Reler pedido na Nuvemshop\"");
+  else if (totals.nsShipping === null) block("values_missing", "Frete do comprador ainda não lido: clique em \"Reler pedido na Nuvemshop\"");
 
   // Configuração comercial do canal.
   if (!settings) block("settings_missing", "Configuração comercial da ADS para a Nuvemshop não definida (Configurações › Pedidos ADS › Nuvemshop)");
@@ -365,8 +420,8 @@ export async function buildNsAdsOrder(sql: Sql, storeId: string, orderId: string
   // Desconto do pedido = o que falta para fechar o total pago (subtotal + frete do comprador − total). Assim o total
   // ADS bate com o pago mesmo quando a Nuvemshop soma cupom, promoção e desconto do meio de pagamento.
   const shipping = totals.nsShipping ?? 0;
-  const fieldsDiscount = round2((num(o.discount) ?? 0) + (num(o.discountCoupon) ?? 0) + (num(o.discountGateway) ?? 0));
-  if (totals.nsSubtotal !== null && totals.nsTotal !== null) {
+  const fieldsDiscount = nsDiscountTotal({ discount: o.discount, discount_coupon: o.discountCoupon, discount_gateway: o.discountGateway });
+  if (totals.nsSubtotal !== null && totals.nsTotal !== null && totals.nsShipping !== null) {
     const derived = round2(totals.nsSubtotal + shipping - totals.nsTotal);
     totals.nsDiscount = derived;
     if (derived < 0) block("ns_total_inconsistent", `Total da Nuvemshop (${fmt(totals.nsTotal)}) maior que subtotal + frete (${fmt(round2(totals.nsSubtotal + shipping))})`);

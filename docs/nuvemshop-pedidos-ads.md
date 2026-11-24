@@ -17,6 +17,11 @@ webhook ou rotina automática.
 
 1. **Reler pedido na Nuvemshop**: lê valores (subtotal, descontos, frete, total, data do pagamento), preço de cada
    linha e os dados do comprador (CPF/CNPJ, nome, endereço de cobrança, telefone, e-mail). Já consulta o cliente na ADS.
+   - Frete do comprador: na API 2025-03 o pedido não traz esse valor; ele vem do `consumer_cost` dos fulfillment
+     orders (`aggregates=fulfillment_orders`). Sem isso, usa a identidade documentada total = subtotal − desconto +
+     frete. O campo `discount` já é o desconto total (cupom e meio de pagamento estão dentro dele).
+   - A Nuvemshop recusa `shipping_cost_customer` no filtro `fields` (500/404): não acrescente campos ao filtro sem
+     testar.
 2. **Cliente ADS**: encontrado pelo CPF/CNPJ (o mesmo cadastro usado pelo ML). Se não existir, o cadastro é preparado
    com o telefone do comprador (o telefone padrão da loja só entra se a Nuvemshop não informar) e exige digitar
    CADASTRAR. A ADS cria clientes da API como inativos: ative no ADSNET.

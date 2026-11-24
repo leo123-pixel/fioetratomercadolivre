@@ -5,7 +5,7 @@ import { GET as nsOrdersGet } from "@/app/api/nuvemshop/orders/route";
 import { getAdsOrderSettings, settingsKey, type AdsOrderSettings } from "@/lib/ads/commercial";
 import { updateInventorySettings } from "@/lib/inventory/settings";
 import { NuvemshopApiError, resetNuvemshopThrottleForTests } from "@/lib/nuvemshop/client";
-import { buildNsAdsOrder, parseNsBilling, reconcileNsSubmission, sendNsOrderToAds, ufOf } from "@/lib/nuvemshop/ads-orders";
+import { buildNsAdsOrder, nsDiscountTotal, nsShippingCost, parseNsBilling, reconcileNsSubmission, sendNsOrderToAds, ufOf } from "@/lib/nuvemshop/ads-orders";
 import { confirmMapping } from "@/lib/nuvemshop/mapping";
 import { createImportJob, processNuvemshopJobs } from "@/lib/nuvemshop/import";
 import { handleCallback, startAuthorization } from "@/lib/nuvemshop/oauth";
@@ -258,6 +258,36 @@ describe("pedido Nuvemshop → ADS", () => {
     expect(s.body.payload.clienteCnpjCpf).not.toBe(CPF);
   });
 
+  it("API 2025-03: frete do comprador vem do fulfillment order (consumer_cost), não do pedido", async () => {
+    // Como no pedido real #1338: sem shipping_cost_customer; total = itens + frete.
+    const order = nsOrder(5001, {
+      shipping_cost_customer: undefined,
+      discount: "0.00",
+      discount_coupon: "0.00",
+      subtotal: "100.00",
+      total: "137.50",
+      fulfillments: [{ id: "01F", shipping: { type: "ship", option: { name: "PAC", merchant_cost: { value: "30.00" }, consumer_cost: { value: "37.50", currency: "BRL" } } } }],
+    });
+    await ready({ order });
+    let s = await state();
+    expect(s.body.validation.issues.map((i: { code: string }) => i.code)).toContain("values_missing");
+    expect(s.body.validation.issues.map((i: { code: string }) => i.code)).not.toContain("ns_total_inconsistent");
+    await post("5001", { action: "refresh" });
+    s = await state();
+    expect(s.body.validation.issues.filter((i: { blocking: boolean }) => i.blocking)).toEqual([]);
+    expect(s.body.payload).toMatchObject({ frete: 37.5, desconto: 0, total: 137.5, parcelas: [{ parcela: 1, valor: 137.5 }] });
+  });
+
+  it("sem fulfillment nem campo de frete: frete = total − subtotal + desconto", async () => {
+    const order = nsOrder(5001, { shipping_cost_customer: undefined, discount: "10.00", discount_coupon: "10.00", subtotal: "100.00", total: "127.50" });
+    await ready({ order });
+    await post("5001", { action: "refresh" });
+    const s = await state();
+    expect(s.body.validation.issues.filter((i: { blocking: boolean }) => i.blocking)).toEqual([]);
+    expect(s.body.validation.issues.map((i: { code: string }) => i.code)).not.toContain("discount_breakdown");
+    expect(s.body.payload).toMatchObject({ frete: 37.5, desconto: 10, total: 127.5 });
+  });
+
   it("envio manual em homologação: POST único, idempotente, e o compromisso de estoque recebe o fato do envio", async () => {
     await ready();
     await post("5001", { action: "refresh" });
@@ -433,5 +463,25 @@ describe("filtro fields da Nuvemshop", () => {
     let n = 0;
     await expect(withFieldFallback("a,b", async () => { n++; throw unknownField; })).rejects.toBe(unknownField);
     expect(n).toBe(1);
+  });
+});
+
+describe("frete e desconto do pedido Nuvemshop", () => {
+  it("soma consumer_cost dos fulfillment orders em qualquer formato Money", () => {
+    expect(nsShippingCost({ fulfillments: [{ shipping: { option: { consumer_cost: { value: "20.00" } } } }, { shipping: { consumer_cost: 5.5 } }] })).toEqual({ value: 25.5, source: "fulfillment" });
+    expect(nsShippingCost({ fulfillments: [{ shipping: { option: { consumer_cost: { amount: 0 } } } }], total: "50", subtotal: "40" })).toEqual({ value: 0, source: "fulfillment" });
+  });
+
+  it("cai para o campo antigo e depois para a identidade do total", () => {
+    expect(nsShippingCost({ shipping_cost_customer: "15.00", total: "1", subtotal: "1" })).toEqual({ value: 15, source: "order_field" });
+    expect(nsShippingCost({ subtotal: "34.90", discount: "0.00", total: "72.40" })).toEqual({ value: 37.5, source: "derived" });
+    expect(nsShippingCost({ subtotal: "100", total: "120" , discount: "0", discount_coupon: "10" })).toEqual({ value: 30, source: "derived" });
+    expect(nsShippingCost({ subtotal: "100", total: "50" })).toEqual({ value: null, source: null });
+    expect(nsShippingCost({ total: "50" })).toEqual({ value: null, source: null });
+  });
+
+  it("discount já é o total (não soma de novo cupom e meio de pagamento)", () => {
+    expect(nsDiscountTotal({ discount: "600.00", discount_coupon: "0.00", discount_gateway: "600.00" })).toBe(600);
+    expect(nsDiscountTotal({ discount: "0.00", discount_coupon: "10.00", discount_gateway: "2.00" })).toBe(12);
   });
 });
