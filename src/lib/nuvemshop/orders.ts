@@ -21,12 +21,16 @@ import { hasScope } from "./write-gate";
  *   canal + pedido + linha + produto físico, kits expandidos pela composição do vínculo.
  * - Momento do compromisso: na CRIAÇÃO do pedido (padrão — a Nuvemshop já desconta o próprio estoque nesse
  *   momento e o pedido pode ser pago depois) ou no pagamento (política PAID). Cancelado = liberado.
- * - Nesta fase o pedido NÃO vai para a ADS: o compromisso fica PENDING_ERP (descontado) até um administrador
- *   confirmar a baixa na ADS ("Baixa ADS confirmada"), quando passa a REFLECTED_IN_ERP e deixa de ser descontado —
- *   o desconto local nunca soma com a baixa da ADS (sem baixa dupla).
+ * - O envio à ADS é MANUAL (ads-orders.ts): o envio registra os fatos ADS_ORDER_* nos compromissos e a política do
+ *   Inventory Core decide quando a baixa está refletida. Sem envio pelo integrador, o compromisso fica PENDING_ERP
+ *   (descontado) até um administrador confirmar a baixa ("Baixa ADS confirmada"), quando passa a REFLECTED_IN_ERP e
+ *   deixa de ser descontado — o desconto local nunca soma com a baixa da ADS (sem baixa dupla).
+ * - Valores do pedido (subtotal, descontos, frete, total) e o preço de cada linha são guardados (sem dados pessoais);
+ *   os dados fiscais do comprador só são lidos sob demanda, ao preparar o envio à ADS (ads-orders.ts).
  * - Leitura mais antiga que a gravada (updated_at menor) não substitui a mais nova.
  */
-export const ORDER_FIELDS = "id,number,status,payment_status,shipping_status,created_at,updated_at,cancelled_at,products";
+export const ORDER_FIELDS =
+  "id,number,status,payment_status,shipping_status,created_at,updated_at,cancelled_at,paid_at,currency,gateway,subtotal,discount,discount_coupon,discount_gateway,shipping_cost_customer,total,products";
 
 export interface NsOrder {
   id: number | string;
@@ -37,7 +41,16 @@ export interface NsOrder {
   created_at?: string | null;
   updated_at?: string | null;
   cancelled_at?: string | null;
-  products?: { id?: number | string; product_id?: number | string; variant_id?: number | string; quantity?: number | string; sku?: string | null }[] | null;
+  paid_at?: string | null;
+  currency?: string | null;
+  gateway?: string | null;
+  subtotal?: number | string | null;
+  discount?: number | string | null;
+  discount_coupon?: number | string | null;
+  discount_gateway?: number | string | null;
+  shipping_cost_customer?: number | string | null;
+  total?: number | string | null;
+  products?: { id?: number | string; product_id?: number | string; variant_id?: number | string; quantity?: number | string; sku?: string | null; price?: number | string | null; name?: unknown }[] | null;
 }
 
 export interface OrderLine {
@@ -46,7 +59,22 @@ export interface OrderLine {
   variantId: string | null;
   quantity: number;
   sku: string | null;
+  /** Preço unitário na compra (null quando a leitura não trouxe o preço). */
+  price?: number | null;
+  name?: string | null;
 }
+
+/** Valor monetário da API ("125.50" ou 125.5) → número com 2 casas; ausente/inválido → null. */
+export const money = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+};
+
+const textOf = (v: unknown): string | null => {
+  const t = typeof v === "string" ? v : v && typeof v === "object" ? ((v as Record<string, unknown>).pt ?? Object.values(v as Record<string, unknown>)[0]) : null;
+  return typeof t === "string" && t.trim() ? t.trim().slice(0, 120) : null;
+};
 
 const date = (v: unknown): string | null => {
   if (typeof v !== "string" || !v) return null;
@@ -61,6 +89,8 @@ export function orderLines(o: NsOrder): OrderLine[] {
     variantId: p?.variant_id !== undefined && p?.variant_id !== null && String(p.variant_id) !== "" ? String(p.variant_id) : null,
     quantity: Math.max(0, Math.trunc(Number(p?.quantity ?? 0))),
     sku: typeof p?.sku === "string" && p.sku.trim() ? p.sku.trim().slice(0, 80) : null,
+    price: money(p?.price),
+    name: textOf(p?.name),
   }));
 }
 
@@ -142,23 +172,24 @@ export async function upsertOrder(sql: Sql, storeId: string, o: NsOrder, source:
     }
   }
   const mappingState = !lines.length || unmapped === lines.length ? "UNMAPPED" : unmapped ? "PARTIAL" : "MAPPED";
-  const commitment = !states.length
-    ? "NONE"
-    : states.includes("REQUIRES_RECONCILIATION")
-      ? "REQUIRES_RECONCILIATION"
-      : states.includes("PENDING_ERP")
-        ? "COMMITTED"
-        : states.every((s) => s === "RELEASED")
-          ? "RELEASED"
-          : "REFLECTED_IN_ERP";
+  const commitment = commitmentFromStates(states);
+  // Leitura sem valores (campos não pedidos) não apaga os valores já conhecidos (COALESCE).
   await sql.execute(
     `INSERT INTO nuvemshop_orders (store_id, order_id, number, status, payment_status, shipping_status, cancelled_at, remote_created_at, remote_updated_at, lines,
-       mapping_state, commitment_state, unmapped_lines, source, fetched_at)
-     VALUES ($1, $2::bigint, $3::bigint, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::jsonb, $11, $12, $13, $14, $15::timestamptz)
+       mapping_state, commitment_state, unmapped_lines, source, fetched_at, paid_at, currency, gateway, subtotal, discount, discount_coupon, discount_gateway,
+       shipping_cost_customer, total)
+     VALUES ($1, $2::bigint, $3::bigint, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::jsonb, $11, $12, $13, $14, $15::timestamptz,
+       $16::timestamptz, $17, $18, $19::numeric, $20::numeric, $21::numeric, $22::numeric, $23::numeric, $24::numeric)
      ON CONFLICT (store_id, order_id) DO UPDATE SET number = EXCLUDED.number, status = EXCLUDED.status, payment_status = EXCLUDED.payment_status,
        shipping_status = EXCLUDED.shipping_status, cancelled_at = EXCLUDED.cancelled_at, remote_created_at = EXCLUDED.remote_created_at,
        remote_updated_at = EXCLUDED.remote_updated_at, lines = EXCLUDED.lines, mapping_state = EXCLUDED.mapping_state, commitment_state = EXCLUDED.commitment_state,
-       unmapped_lines = EXCLUDED.unmapped_lines, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at, updated_at = now()`,
+       unmapped_lines = EXCLUDED.unmapped_lines, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at,
+       paid_at = COALESCE(EXCLUDED.paid_at, nuvemshop_orders.paid_at), currency = COALESCE(EXCLUDED.currency, nuvemshop_orders.currency),
+       gateway = COALESCE(EXCLUDED.gateway, nuvemshop_orders.gateway), subtotal = COALESCE(EXCLUDED.subtotal, nuvemshop_orders.subtotal),
+       discount = COALESCE(EXCLUDED.discount, nuvemshop_orders.discount), discount_coupon = COALESCE(EXCLUDED.discount_coupon, nuvemshop_orders.discount_coupon),
+       discount_gateway = COALESCE(EXCLUDED.discount_gateway, nuvemshop_orders.discount_gateway),
+       shipping_cost_customer = COALESCE(EXCLUDED.shipping_cost_customer, nuvemshop_orders.shipping_cost_customer),
+       total = COALESCE(EXCLUDED.total, nuvemshop_orders.total), updated_at = now()`,
     [
       storeId,
       orderId,
@@ -175,10 +206,32 @@ export async function upsertOrder(sql: Sql, storeId: string, o: NsOrder, source:
       unmapped,
       source,
       now.toISOString(),
+      date(o.paid_at),
+      typeof o.currency === "string" ? o.currency.slice(0, 3) : null,
+      typeof o.gateway === "string" ? o.gateway.slice(0, 60) : null,
+      money(o.subtotal),
+      money(o.discount),
+      money(o.discount_coupon),
+      money(o.discount_gateway),
+      money(o.shipping_cost_customer),
+      money(o.total),
     ],
   );
   if (unmapped) logger.warn("Pedido Nuvemshop com linha sem vínculo ADS: aumentos de estoque do produto ficam bloqueados", { orderId, unmapped });
   return { orderId, stale: false, committed: commit, cancelled, lines: lines.length, unmapped, reservations: states.length };
+}
+
+/** Situação do pedido a partir dos estados dos compromissos das linhas. */
+export function commitmentFromStates(states: string[]): string {
+  return !states.length
+    ? "NONE"
+    : states.includes("REQUIRES_RECONCILIATION")
+      ? "REQUIRES_RECONCILIATION"
+      : states.includes("PENDING_ERP")
+        ? "COMMITTED"
+        : states.every((s) => s === "RELEASED")
+          ? "RELEASED"
+          : "REFLECTED_IN_ERP";
 }
 
 export async function fetchOrder(client: NuvemshopApiClient, orderId: string): Promise<NsOrder | null> {

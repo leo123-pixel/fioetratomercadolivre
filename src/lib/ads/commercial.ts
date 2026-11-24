@@ -9,9 +9,20 @@ import { getAdsEnv } from "./env";
  * e são validados contra ela ao salvar — nada de identificadores fictícios.
  */
 export const SETTINGS_KEY = "ads_order_settings";
-/** A configuração é guardada por ambiente: códigos validados na homologação não valem na produção. */
-export function settingsKey(environment: string = adsEnvironment().environment): string {
-  return `${SETTINGS_KEY}:${environment}`;
+
+/** Canal de venda: cada canal tem a própria configuração comercial (tabela, origem, operação...). */
+export type SalesChannel = "mercadolivre" | "nuvemshop";
+export const SALES_CHANNELS: readonly SalesChannel[] = ["mercadolivre", "nuvemshop"];
+export const CHANNEL_LABEL: Record<SalesChannel, string> = { mercadolivre: "Mercado Livre", nuvemshop: "Nuvemshop" };
+export const isSalesChannel = (v: unknown): v is SalesChannel => typeof v === "string" && (SALES_CHANNELS as readonly string[]).includes(v);
+
+/**
+ * A configuração é guardada por ambiente (códigos validados na homologação não valem na produção) e por canal.
+ * O Mercado Livre mantém a chave original (ads_order_settings:<ambiente>); os demais canais usam
+ * ads_order_settings:<canal>:<ambiente>.
+ */
+export function settingsKey(environment: string = adsEnvironment().environment, channel: SalesChannel = "mercadolivre"): string {
+  return channel === "mercadolivre" ? `${SETTINGS_KEY}:${environment}` : `${SETTINGS_KEY}:${channel}:${environment}`;
 }
 
 export const adsOrderSettingsSchema = z.object({
@@ -44,8 +55,8 @@ export const adsOrderSettingsSchema = z.object({
 });
 export type AdsOrderSettings = z.infer<typeof adsOrderSettingsSchema>;
 
-export async function getAdsOrderSettings(sql: Sql): Promise<AdsOrderSettings | null> {
-  const [row] = await sql.query<{ value: unknown }>(`SELECT value FROM app_settings WHERE key = $1`, [settingsKey()]);
+export async function getAdsOrderSettings(sql: Sql, channel: SalesChannel = "mercadolivre"): Promise<AdsOrderSettings | null> {
+  const [row] = await sql.query<{ value: unknown }>(`SELECT value FROM app_settings WHERE key = $1`, [settingsKey(undefined, channel)]);
   const parsed = adsOrderSettingsSchema.safeParse(row?.value);
   return parsed.success ? parsed.data : null;
 }
@@ -181,7 +192,7 @@ export class SettingsError extends Error {
 }
 
 /** Valida cada código contra as listas reais da ADS (ativo e existente) e grava. */
-export async function saveAdsOrderSettings(sql: Sql, input: unknown): Promise<AdsOrderSettings> {
+export async function saveAdsOrderSettings(sql: Sql, input: unknown, channel: SalesChannel = "mercadolivre"): Promise<AdsOrderSettings> {
   const parsed = adsOrderSettingsSchema.safeParse(input);
   if (!parsed.success) throw new SettingsError(parsed.error.issues.map((i) => ({ field: i.path.join("."), message: i.message })));
   const v = parsed.data;
@@ -212,7 +223,7 @@ export async function saveAdsOrderSettings(sql: Sql, input: unknown): Promise<Ad
   await sql.execute(
     `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-    [settingsKey(o.environment.environment), JSON.stringify(v)],
+    [settingsKey(o.environment.environment, channel), JSON.stringify(v)],
   );
   return v;
 }
