@@ -30,7 +30,7 @@ import { hasScope } from "./write-gate";
  * - Leitura mais antiga que a gravada (updated_at menor) não substitui a mais nova.
  */
 export const ORDER_FIELDS =
-  "id,number,status,payment_status,shipping_status,created_at,updated_at,cancelled_at,paid_at,currency,gateway,subtotal,discount,discount_coupon,discount_gateway,shipping_cost_customer,total,products";
+  "id,number,status,payment_status,shipping_status,created_at,updated_at,cancelled_at,paid_at,currency,gateway,subtotal,discount,discount_coupon,discount_gateway,total,products";
 
 export interface NsOrder {
   id: number | string;
@@ -234,11 +234,36 @@ export function commitmentFromStates(states: string[]): string {
           : "REFLECTED_IN_ERP";
 }
 
+/**
+ * Campos que a Nuvemshop recusa no filtro `fields` ("Invalid fields for this resource: a, b"). A lista responde
+ * 404 com essa mensagem; o pedido avulso responde 500 sem dizer o campo (por isso shipping_cost_customer, recusado
+ * em produção, não está em ORDER_FIELDS e só vem na leitura completa de refreshNsOrderForAds).
+ */
+export function invalidFieldsOf(err: unknown): string[] {
+  if (!(err instanceof NuvemshopApiError)) return [];
+  const m = /invalid fields for this resource:\s*([\w,\s]+)/i.exec(err.message);
+  return m ? m[1].split(",").map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** Executa uma leitura com `fields`; se a Nuvemshop recusar algum campo, tenta de novo uma vez sem ele. */
+export async function withFieldFallback<T>(fields: string, run: (fields: string) => Promise<T>): Promise<T> {
+  try {
+    return await run(fields);
+  } catch (err) {
+    const bad = invalidFieldsOf(err);
+    const all = fields.split(",");
+    const kept = all.filter((f) => !bad.includes(f));
+    if (!bad.length || kept.length === all.length) throw err;
+    logger.warn("Nuvemshop recusou campos do filtro fields; repetindo sem eles", { fields: bad });
+    return run(kept.join(","));
+  }
+}
+
 export async function fetchOrder(client: NuvemshopApiClient, orderId: string): Promise<NsOrder | null> {
   try {
-    return (await client.get<NsOrder>(`/orders/${orderId}`, { fields: ORDER_FIELDS })).data;
+    return await withFieldFallback(ORDER_FIELDS, async (fields) => (await client.get<NsOrder>(`/orders/${orderId}`, { fields })).data);
   } catch (err) {
-    if (err instanceof NuvemshopApiError && err.kind === "not_found") return null;
+    if (err instanceof NuvemshopApiError && err.kind === "not_found" && !invalidFieldsOf(err).length) return null;
     throw err;
   }
 }
@@ -279,7 +304,7 @@ export async function reconcileOrders(sql: Sql, client: NuvemshopApiClient, stor
   try {
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (opts.deadline && Date.now() > opts.deadline - 5_000) break;
-      const res = await client.getPage<NsOrder>("/orders", page, 200, { updated_at_min: since.toISOString(), fields: ORDER_FIELDS });
+      const res = await withFieldFallback(ORDER_FIELDS, (fields) => client.getPage<NsOrder>("/orders", page, 200, { updated_at_min: since.toISOString(), fields }));
       for (const o of res.items) {
         const r = await upsertOrder(sql, storeId, o, "RECONCILIATION", now);
         orders++;
