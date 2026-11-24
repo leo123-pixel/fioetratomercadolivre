@@ -80,22 +80,29 @@ function Select(props: { label: string; value: string | null; options: Option[];
   );
 }
 
-export function CommercialSettingsForm() {
+export function CommercialSettingsForm({ channel = "mercadolivre" }: { channel?: "mercadolivre" | "nuvemshop" }) {
   const [options, setOptions] = useState<Options | null>(null);
   const [form, setForm] = useState<Settings>(EMPTY);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [suggested, setSuggested] = useState(false);
+  const ns = channel === "nuvemshop";
+  const url = `/api/ads/order-settings?channel=${channel}`;
 
   useEffect(() => {
     void (async () => {
-      const r = await api<{ settings: Settings | null; options: Options }>("/api/ads/order-settings");
+      const r = await api<{ settings: Settings | null; suggested: Settings | null; options: Options }>(url);
       if (!r.ok) return setLoadError(errorText(r));
       setOptions(r.data.options);
       if (r.data.settings) setForm(r.data.settings);
+      else if (r.data.suggested) {
+        setForm(r.data.suggested);
+        setSuggested(true);
+      }
     })();
-  }, []);
+  }, [url]);
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -103,12 +110,13 @@ export function CommercialSettingsForm() {
     setBusy(true);
     setMsg(null);
     setErrors({});
-    const r = await api<{ settings: Settings }>("/api/ads/order-settings", { method: "PUT", body: { ...form, representanteId: form.representanteId || null, customerSetorId: form.customerSetorId || null, customerClasseId: form.customerClasseId || null, customerDefaultPhone: form.customerDefaultPhone?.replace(/\D/g, "") || null, customerDefaultEmail: form.customerDefaultEmail?.trim() || null } });
+    const r = await api<{ settings: Settings }>(url, { method: "PUT", body: { ...form, representanteId: form.representanteId || null, customerSetorId: form.customerSetorId || null, customerClasseId: form.customerClasseId || null, customerDefaultPhone: form.customerDefaultPhone?.replace(/\D/g, "") || null, customerDefaultEmail: form.customerDefaultEmail?.trim() || null } });
     setBusy(false);
     if (!r.ok) {
       setErrors(Object.fromEntries((r.data.issues ?? []).map((i) => [i.path, i.message])));
       return setMsg({ kind: "error", text: errorText(r) });
     }
+    setSuggested(false);
     setMsg({ kind: "success", text: "Configuração salva e validada contra a ADS." });
   }
 
@@ -125,8 +133,14 @@ export function CommercialSettingsForm() {
             ? "envio de pedidos para PRODUÇÃO habilitado"
             : "envio de pedidos permitido (testes)"
           : "envio de pedidos BLOQUEADO neste ambiente"}
-        . A configuração é salva separadamente para cada ambiente.
+        . A configuração é salva separadamente para cada ambiente e para cada canal ({ns ? "Nuvemshop" : "Mercado Livre"}).
       </div>
+      {suggested && (
+        <div className="alert info">
+          Ainda não há configuração para a Nuvemshop: o formulário veio preenchido com a do Mercado Livre e a tabela {form.tabela}. Revise a origem do pedido, a
+          operação e a forma de pagamento da loja e salve — nada foi gravado ainda.
+        </div>
+      )}
       {Object.keys(options.errors).length > 0 && (
         <div className="alert error">
           Falha ao consultar: {Object.entries(options.errors).map(([k, v]) => `${k} (${v})`).join(", ")}
@@ -162,7 +176,7 @@ export function CommercialSettingsForm() {
           <div className="field">
             <label>Frete</label>
             <select value={form.freightMode} onChange={(e) => set("freightMode", e.target.value as Settings["freightMode"])}>
-              <option value="none">Não informar (frete pago pelo vendedor / Mercado Envios)</option>
+              <option value="none">{ns ? "Não informar (frete por conta da loja)" : "Não informar (frete pago pelo vendedor / Mercado Envios)"}</option>
               <option value="buyer_paid">Valor de frete pago pelo comprador</option>
             </select>
           </div>
@@ -170,13 +184,13 @@ export function CommercialSettingsForm() {
             <label>Desconto do pedido</label>
             <select value={form.discountMode} onChange={(e) => set("discountMode", e.target.value as Settings["discountMode"])}>
               <option value="none">Não informar</option>
-              <option value="coupon">Cupom aplicado no pedido do ML</option>
+              <option value="coupon">{ns ? "Descontos do pedido na Nuvemshop (cupom, promoção, meio de pagamento)" : "Cupom aplicado no pedido do ML"}</option>
             </select>
           </div>
           <div className="field">
             <label>Preço de tabela dos itens</label>
             <select value={form.itemPriceMode} onChange={(e) => set("itemPriceMode", e.target.value as Settings["itemPriceMode"])}>
-              <option value="sale_price">Preço vendido no ML (desconto 0%)</option>
+              <option value="sale_price">{ns ? "Preço vendido na loja (desconto 0%)" : "Preço vendido no ML (desconto 0%)"}</option>
               <option value="ads_table">Preço da tabela ADS (desconto = diferença)</option>
             </select>
           </div>
@@ -188,7 +202,10 @@ export function CommercialSettingsForm() {
             </select>
           </div>
         </div>
-        <p className="muted">O preço unitário enviado é sempre o efetivamente vendido no Mercado Livre; o total é validado contra o pedido antes do envio.</p>
+        <p className="muted">
+          O preço unitário enviado é sempre o efetivamente vendido {ns ? "na Nuvemshop" : "no Mercado Livre"}; o total é validado contra o pedido antes do envio.
+          {ns && " Com frete do comprador e descontos do pedido, o total ADS fica igual ao total pago na loja."}
+        </p>
       </section>
       <section className="card">
         <h2>Cadastro de cliente novo (homologação)</h2>
@@ -215,7 +232,11 @@ export function CommercialSettingsForm() {
           <div className="field">
             <label>Telefone padrão da loja</label>
             <input value={form.customerDefaultPhone ?? ""} inputMode="tel" maxLength={15} placeholder="DDD + número" onChange={(e) => set("customerDefaultPhone", e.target.value || null)} />
-            <small className="hint">A ADS exige telefone e o Mercado Livre não informa o do comprador: use o telefone de contato da loja. Fica registrado no cadastro.</small>
+            <small className="hint">
+              {ns
+                ? "Usado só quando a Nuvemshop não informar o telefone do comprador (a ADS exige telefone)."
+                : "A ADS exige telefone e o Mercado Livre não informa o do comprador: use o telefone de contato da loja. Fica registrado no cadastro."}
+            </small>
             {errors.customerDefaultPhone && <small className="hint" style={{ color: "var(--danger-fg)" }}>{errors.customerDefaultPhone}</small>}
           </div>
           <div className="field">

@@ -567,7 +567,7 @@ function OrdersSection({ data, busy, act }: { data: Data; busy: string | null; a
               {data.pendingOrders.map((o) => (
                 <tr key={o.orderId}>
                   <td>
-                    #{o.number ?? "—"} <small className="muted">{o.orderId}</small>
+                    <a href={`/nuvemshop/pedidos/${o.orderId}`}>#{o.number ?? "—"}</a> <small className="muted">{o.orderId}</small>
                   </td>
                   <td>
                     <small>{formatDateTime(o.createdAt)}</small>

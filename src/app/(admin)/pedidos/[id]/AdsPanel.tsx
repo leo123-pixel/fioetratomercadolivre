@@ -40,7 +40,7 @@ interface State {
   attempts: { id: string; operation: string; httpStatus: number | null; error: string | null; durationMs: number | null; createdAt: string; response: unknown }[];
 }
 
-const CUSTOMER_LABEL: Record<string, string> = {
+export const CUSTOMER_LABEL: Record<string, string> = {
   FOUND: "Encontrado na ADS",
   CREATED: "Cadastrado na ADS pelo integrador",
   NOT_FOUND: "Não existe na ADS",
@@ -49,7 +49,7 @@ const CUSTOMER_LABEL: Record<string, string> = {
   UNKNOWN: "Resultado do cadastro incerto",
   ERROR: "Erro na consulta",
 };
-const CITY_SOURCE: Record<string, string> = {
+export const CITY_SOURCE: Record<string, string> = {
   NOME: "pelo nome da cidade (lista oficial do IBGE)",
   CEP: "pelo CEP",
   ADS: "pelo cadastro de cidades da ADS",
@@ -57,7 +57,19 @@ const CITY_SOURCE: Record<string, string> = {
 };
 
 /** Escolha manual do município (lista oficial do IBGE da UF do endereço). */
-function CityPicker({ options, billingCity, disabled, onSave }: { options: { code: string; name: string }[]; billingCity: string | null; disabled: boolean; onSave: (code: string) => void }) {
+export function CityPicker({
+  options,
+  billingCity,
+  disabled,
+  onSave,
+  channelLabel = "O Mercado Livre",
+}: {
+  options: { code: string; name: string }[];
+  billingCity: string | null;
+  disabled: boolean;
+  onSave: (code: string) => void;
+  channelLabel?: string;
+}) {
   const [q, setQ] = useState("");
   const [code, setCode] = useState("");
   const norm = (t: string) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -66,7 +78,7 @@ function CityPicker({ options, billingCity, disabled, onSave }: { options: { cod
     <div style={{ margin: "8px 0", padding: 10, border: "1px solid var(--warn-fg)", borderRadius: 6 }}>
       <strong>Município não identificado automaticamente</strong>
       <p className="muted" style={{ margin: "4px 0" }}>
-        O Mercado Livre informou a cidade &quot;{billingCity ?? "—"}&quot;, que não está na lista oficial do IBGE, e o CEP não foi confirmado. Escolha o município correto (confira o CEP no endereço acima).
+        {channelLabel} informou a cidade &quot;{billingCity ?? "—"}&quot;, que não está na lista oficial do IBGE, e o CEP não foi confirmado. Escolha o município correto (confira o CEP no endereço acima).
       </p>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <input className="input" placeholder="Filtrar município" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 220 }} />

@@ -25,7 +25,27 @@ export interface AdsCustomer {
   checkedAt: Date | null;
 }
 
-async function logAttempt(sql: Sql, orderInboxId: string | null, a: { operation: string; status?: number | null; request?: unknown; response?: unknown; error?: string | null; durationMs?: number | null }) {
+export interface AttemptRecord {
+  operation: string;
+  status?: number | null;
+  request?: unknown;
+  response?: unknown;
+  error?: string | null;
+  durationMs?: number | null;
+}
+/** Registro das chamadas à ADS do canal de origem (padrão: histórico dos pedidos do Mercado Livre). */
+export type AttemptLogger = (a: AttemptRecord) => Promise<void>;
+
+/** Contexto do canal: onde registrar as chamadas e onde guardar o município resolvido. */
+export interface CustomerContext {
+  log?: AttemptLogger;
+  saveCity?: (city: ResolvedCity) => Promise<void>;
+  /** Rótulo do canal na observação do cadastro (padrão "Mercado Livre"). */
+  channelLabel?: string;
+}
+
+async function logAttempt(sql: Sql, orderInboxId: string | null, a: AttemptRecord, log?: AttemptLogger) {
+  if (log) return log(a);
   await sql.execute(
     `INSERT INTO ads_order_attempts (order_id, operation, http_status, request, response, error, duration_ms, environment)
      VALUES ($1::bigint, $2::text, $3::int, $4::jsonb, $5::jsonb, $6::text, $7::int, $8::text)`,
@@ -54,11 +74,11 @@ async function upsertCustomer(sql: Sql, cnpjCpf: string, status: CustomerStatus,
 }
 
 /** Procura o cliente na ADS pelo documento (correspondência exata dos dígitos). */
-export async function lookupAdsCustomer(sql: Sql, cnpjCpf: string, orderInboxId: string | null = null): Promise<AdsCustomer> {
+export async function lookupAdsCustomer(sql: Sql, cnpjCpf: string, orderInboxId: string | null = null, ctx: CustomerContext = {}): Promise<AdsCustomer> {
   const doc = cnpjCpf.replace(/\D/g, "");
   if (doc.length !== 11 && doc.length !== 14) throw new Error("CPF/CNPJ inválido");
   const r = await adsCall<{ items?: { clienteId?: number; cnpjCpf?: string; inativo?: boolean }[] }>("GET", "clientes", { query: { cnpjcpf: doc, page: 1, pageSize: 20 } });
-  await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_LOOKUP", status: r.status, request: { cnpjcpf: maskDocument(doc) }, response: { total: r.data?.items?.length ?? null }, durationMs: r.durationMs });
+  await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_LOOKUP", status: r.status, request: { cnpjcpf: maskDocument(doc) }, response: { total: r.data?.items?.length ?? null }, durationMs: r.durationMs }, ctx.log);
   if (r.status !== 200 || !Array.isArray(r.data?.items)) {
     await upsertCustomer(sql, doc, "ERROR", { lastError: `${r.status >= 500 || r.status === 429 ? "ADS indisponível" : "Consulta de clientes na ADS"} (HTTP ${r.status})${adsProblem(r.data) ? `: ${adsProblem(r.data)}` : ""}${r.status >= 500 ? "; tente de novo em instantes" : ""}` });
     return (await getAdsCustomer(sql, doc))!;
@@ -95,7 +115,7 @@ export interface ResolvedCity {
  * 3) cadastro de cidades da ADS (nome exato e único).
  * Sem resultado → null: o operador escolhe o município na tela.
  */
-export async function resolveCity(billing: StoredBilling, opts: { sql?: Sql; orderInboxId?: string } = {}): Promise<ResolvedCity | null> {
+export async function resolveCity(billing: StoredBilling, opts: { sql?: Sql; orderInboxId?: string; saveCity?: CustomerContext["saveCity"] } = {}): Promise<ResolvedCity | null> {
   if (billing.cityIbge) return billing.cityIbge;
   const a = billing.address;
   const uf = a.state && /^[A-Z]{2}$/.test(a.state) ? a.state : null;
@@ -115,7 +135,8 @@ export async function resolveCity(billing: StoredBilling, opts: { sql?: Sql; ord
       if (m && m.uf === uf) found = { code: m.code, name: m.name, source: "ADS" };
     }
   }
-  if (found && opts.sql && opts.orderInboxId) await setOrderBillingCity(opts.sql, opts.orderInboxId, found).catch(() => undefined);
+  if (found && opts.saveCity) await opts.saveCity(found).catch(() => undefined);
+  else if (found && opts.sql && opts.orderInboxId) await setOrderBillingCity(opts.sql, opts.orderInboxId, found).catch(() => undefined);
   return found;
 }
 
@@ -138,7 +159,12 @@ export async function setCustomerCity(sql: Sql, orderInboxId: string, code: stri
 }
 
 /** Monta o cadastro de cliente (POST /clientes) a partir dos dados fiscais. Campos ausentes vão em "missing". */
-export async function buildCustomerDraft(billing: StoredBilling, settings: AdsOrderSettings | null, opts: { sql?: Sql; orderInboxId?: string } = {}): Promise<CustomerDraft> {
+export async function buildCustomerDraft(
+  billing: StoredBilling,
+  settings: AdsOrderSettings | null,
+  opts: { sql?: Sql; orderInboxId?: string; saveCity?: CustomerContext["saveCity"]; channelLabel?: string } = {},
+): Promise<CustomerDraft> {
+  const channel = opts.channelLabel ?? "Mercado Livre";
   const missing = [...billing.missing.filter((m) => m !== "dados_fiscais_indisponiveis")];
   if (billing.status === "UNAVAILABLE") missing.push("dados_fiscais_indisponiveis");
   if (!settings?.customerSetorId) missing.push("config.setorId");
@@ -164,7 +190,7 @@ export async function buildCustomerDraft(billing: StoredBilling, settings: AdsOr
     representanteId: settings?.representanteId ?? null,
     telefone: phone,
     email,
-    observacao: storeContact ? "Cliente Mercado Livre (integrador). Telefone/e-mail da loja: o ML não informa o do comprador" : "Cliente Mercado Livre (integrador)",
+    observacao: storeContact ? `Cliente ${channel} (integrador). Telefone/e-mail da loja: o ${channel === "Mercado Livre" ? "ML não informa" : "canal não informou"} o do comprador` : `Cliente ${channel} (integrador)`,
     endereco: { cep: a.zip, numero: a.number, rua: a.street, uf: a.state, complemento: a.complement, bairro: a.neighborhood, codigoIbge: ibge },
     contato: { nome: billing.name?.slice(0, 60) ?? null },
   };
@@ -189,13 +215,30 @@ export class CustomerError extends Error {
 export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings: AdsOrderSettings | null, by: string): Promise<AdsCustomer> {
   assertAdsWriteAllowed();
   const billing = await getOrderBilling(sql, orderInboxId);
+  return createAdsCustomerFromBilling(sql, billing, settings, by, { orderInboxId });
+}
+
+/**
+ * Cadastro a partir dos dados fiscais já lidos (qualquer canal). `ctx.log`/`ctx.saveCity` levam o histórico e o
+ * município para as tabelas do canal; sem eles, vale o pedido do Mercado Livre `orderInboxId`.
+ */
+export async function createAdsCustomerFromBilling(
+  sql: Sql,
+  billing: StoredBilling | null,
+  settings: AdsOrderSettings | null,
+  by: string,
+  ctx: CustomerContext & { orderInboxId?: string | null } = {},
+): Promise<AdsCustomer> {
+  assertAdsWriteAllowed();
   if (!billing?.docNumber) throw new CustomerError("no_billing", "Consulte os dados fiscais do comprador antes");
+  const orderInboxId = ctx.orderInboxId ?? null;
+  const log = ctx.log;
   const doc = billing.docNumber;
-  const before = await lookupAdsCustomer(sql, doc, orderInboxId);
+  const before = await lookupAdsCustomer(sql, doc, orderInboxId, ctx);
   if (before.status === "FOUND" || before.status === "CREATED") return before;
   if (before.status === "AMBIGUOUS") throw new CustomerError("ambiguous", before.lastError ?? "Cliente duplicado na ADS");
   if (before.status === "ERROR") throw new CustomerError("lookup_failed", before.lastError ?? "Não foi possível consultar a ADS");
-  const draft = await buildCustomerDraft(billing, settings, { sql, orderInboxId });
+  const draft = await buildCustomerDraft(billing, settings, { sql, orderInboxId: orderInboxId ?? undefined, saveCity: ctx.saveCity, channelLabel: ctx.channelLabel });
   if (draft.missing.length) {
     await upsertCustomer(sql, doc, "NOT_FOUND", { draft: draft.request, lastError: `Cadastro incompleto: ${draft.missing.join(", ")}` });
     throw new CustomerError("incomplete", `Dados insuficientes para cadastrar: ${draft.missing.join(", ")}`);
@@ -209,11 +252,11 @@ export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings
   const masked = { ...draft.request, cnpjCpf: maskDocument(doc) };
   try {
     const r = await adsCall<{ clienteId?: number }>("POST", "clientes", { body: draft.request });
-    await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", status: r.status, request: masked, response: r.data, durationMs: r.durationMs });
+    await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", status: r.status, request: masked, response: r.data, durationMs: r.durationMs }, log);
     if (r.status === 201 && typeof r.data?.clienteId === "number") {
       await upsertCustomer(sql, doc, "CREATED", { adsClienteId: r.data.clienteId });
       // Relê o cadastro para saber a situação real (a ADS pode criar o cliente como inativo).
-      await lookupAdsCustomer(sql, doc, orderInboxId).catch(() => undefined);
+      await lookupAdsCustomer(sql, doc, orderInboxId, ctx).catch(() => undefined);
       logger.info("Cliente cadastrado na ADS", { orderInboxId, clienteId: r.data.clienteId, environment: adsEnvironment().environment });
     } else if (r.status >= 500) {
       await upsertCustomer(sql, doc, "UNKNOWN", { lastError: `ADS respondeu ${r.status}; confirme com nova consulta antes de tentar de novo` });
@@ -222,7 +265,7 @@ export async function createAdsCustomer(sql: Sql, orderInboxId: string, settings
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "erro";
-    await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", request: masked, error: msg });
+    await logAttempt(sql, orderInboxId, { operation: "CUSTOMER_CREATE", request: masked, error: msg }, log);
     const uncertain = err instanceof AdsApiError && (err.kind === "timeout" || err.kind === "network");
     await upsertCustomer(sql, doc, uncertain ? "UNKNOWN" : "NOT_FOUND", { lastError: uncertain ? "Resultado incerto (timeout/rede): consulte a ADS antes de tentar de novo" : msg });
   }
