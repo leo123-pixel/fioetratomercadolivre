@@ -70,6 +70,21 @@ const emailOf = (v: unknown): string | null => {
   const t = typeof v === "string" ? v.trim() : "";
   return /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(t) ? t.toLowerCase() : null;
 };
+/** Nome mais completo entre os candidatos (mais palavras; empate fica com o primeiro). Espaços repetidos são juntados. */
+export function fullestName(candidates: unknown[]): string | null {
+  let best: string | null = null;
+  let bestWords = 0;
+  for (const c of candidates) {
+    const name = str(c, 150)?.replace(/\s+/g, " ") ?? null;
+    if (!name) continue;
+    const words = name.split(" ").length;
+    if (words > bestWords) {
+      best = name;
+      bestWords = words;
+    }
+  }
+  return best;
+}
 
 /**
  * Dados fiscais a partir do pedido Nuvemshop. Endereço de cobrança (billing_*); sem rua de cobrança, usa o
@@ -85,7 +100,9 @@ export function parseNsBilling(o: Record<string, unknown>): BillingData {
   const rawType = str(o.billing_document_type)?.toUpperCase() ?? null;
   const docType = doc.length === 11 ? "CPF" : doc.length === 14 ? "CNPJ" : rawType === "CPF" || rawType === "CNPJ" ? rawType : null;
   const business = str(o.billing_business_name, 150);
-  const person = str(o.billing_name, 150) ?? str(o.contact_name, 150) ?? (useShipping ? str(ship.name, 150) : null);
+  // A Nuvemshop costuma mandar só o primeiro nome em billing_name; contact_name é o nome completo do comprador.
+  // O destinatário da entrega pode ser outra pessoa: só entra quando não há endereço de cobrança.
+  const person = fullestName([o.contact_name, o.billing_name, useShipping ? ship.name : null]);
   return {
     billingInfoId: null,
     docType,

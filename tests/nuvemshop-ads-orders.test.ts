@@ -202,6 +202,17 @@ describe("dados do comprador da Nuvemshop", () => {
     expect(ufOf("BR-MG")).toBe("MG");
   });
 
+  it("nome completo: billing_name com só o primeiro nome não substitui contact_name", () => {
+    // Caso real: a Nuvemshop mandou só "Márcia" em billing_name e o nome completo em contact_name.
+    const b = parseNsBilling({ ...(nsOrder(1) as unknown as Record<string, unknown>), billing_name: "Márcia", contact_name: "Márcia  Souza Lima" });
+    expect(b.name).toBe("Márcia Souza Lima");
+    const c = parseNsBilling({ ...(nsOrder(1) as unknown as Record<string, unknown>), billing_name: "Márcia Souza Lima", contact_name: "Márcia" });
+    expect(c.name).toBe("Márcia Souza Lima");
+    // Destinatário da entrega não vira nome do cliente quando há endereço de cobrança.
+    const d = parseNsBilling({ ...(nsOrder(1) as unknown as Record<string, unknown>), billing_name: "Ana", contact_name: "Ana", shipping_address: { name: "José Carlos da Silva" } });
+    expect(d.name).toBe("Ana");
+  });
+
   it("CNPJ usa a razão social; sem endereço de cobrança usa o de entrega", () => {
     const b = parseNsBilling({
       contact_identification: "11.222.333/0001-81",
