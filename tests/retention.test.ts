@@ -55,13 +55,15 @@ describe("Retenção do histórico de sincronização", () => {
     const linked = await prop("up:2", 19);
     await sql().execute(`INSERT INTO stock_sync_jobs (proposal_id, pool_key, sync_mode, status, authorized_by, idempotency_key, target_quantity) VALUES ($1::bigint, 'up:2', 'AUTO', 'SUCCEEDED', 'teste', 'k1', 3)`, [linked]);
     const old2 = await prop("up:2", 18);
+    const fiveDays = await prop("up:2", 5); // passou dos 3 dias: sai
     const recent = await prop("up:2", 1);
     const r = await pruneSyncHistory(sql(), { deadline: far(), force: true });
-    expect(r.deleted.stock_sync_proposals).toBe(2);
+    expect(r.deleted.stock_sync_proposals).toBe(3);
     const left = await ids("stock_sync_proposals");
     expect(left).toEqual(expect.arrayContaining([knownModel, lastUnknown, open, linked, recent]));
     expect(left).not.toContain(old1);
     expect(left).not.toContain(old2);
+    expect(left).not.toContain(fiveDays);
   });
 
   it("preço ML: preços aplicados e propostas em aberto ficam; a última de cada anúncio fica; o resto antigo sai", async () => {

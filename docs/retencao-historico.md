@@ -19,7 +19,7 @@ automações somavam ~418 MB, porque cada execução gravava uma linha por varia
 |---|---|---|
 | `nuvemshop_sync_items` | 3 dias (30 se ligada a uma escrita) | a última de cada variante × tipo |
 | `inventory_sync_proposals` | 3 dias | — (o núcleo só lê as da execução atual) |
-| `stock_sync_proposals` | 7 dias | abertas (PROPOSED/APPROVED), ligadas a `stock_sync_jobs`, a última de cada estoque e a última com modelo de estoque conhecido |
+| `stock_sync_proposals` | 3 dias (era 7 até 27/11/2026) | abertas (PROPOSED/APPROVED), ligadas a `stock_sync_jobs`, a última de cada estoque e a última com modelo de estoque conhecido |
 | `price_sync_proposals` | 7 dias | abertas (PROPOSED/APPLYING), preços aplicados (`applied_at`), a última de cada anúncio |
 
 Ledger, snapshots, reservas e movimentos do Inventory Core não são tocados. O último resultado fica em
@@ -44,3 +44,13 @@ VACUUM FULL ANALYZE price_sync_proposals;
 `VACUUM FULL` reescreve a tabela e a bloqueia enquanto roda (segundos, para estes tamanhos): uma sincronização que
 cair nesse momento espera ou falha e é refeita no tick seguinte. Se o editor reclamar de transação, rodar um comando
 por vez.
+
+## Ajuste de 27/11/2026: propostas de estoque ML com 3 dias
+
+Depois do `VACUUM FULL`, `stock_sync_proposals` ainda tinha ~100 MB, quase tudo da última semana (a sincronização
+de estoque grava uma proposta por estoque a cada ciclo). A retenção caiu de 7 para 3 dias. O excedente sai nas
+limpezas horárias seguintes; para o arquivo encolher de novo, rodar uma vez depois que `complete = true`:
+
+```sql
+VACUUM FULL ANALYZE stock_sync_proposals;
+```

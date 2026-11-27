@@ -22,7 +22,7 @@ export const RETENTION_DAYS = {
   nuvemshopSyncItems: 3,
   nuvemshopSyncItemsWithJob: 30,
   inventorySyncProposals: 3,
-  stockSyncProposals: 7,
+  stockSyncProposals: 3, // era 7: ~14 mil propostas/dia deixavam a tabela em ~100 MB (27/11/2026)
   priceSyncProposals: 7,
 } as const;
 
