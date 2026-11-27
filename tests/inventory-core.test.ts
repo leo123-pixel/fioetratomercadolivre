@@ -5,7 +5,7 @@ import { adsEnvironment } from "@/lib/ads/client";
 import { recordOrderEvents } from "@/lib/inventory/ingest";
 import { drainOutbox } from "@/lib/inventory/ledger";
 import { InventoryCoreDisabledError } from "@/lib/inventory/mode";
-import { runShadowReconciliation } from "@/lib/inventory/shadow";
+import { liveReadDeadline, runShadowReconciliation } from "@/lib/inventory/shadow";
 import { saveLocation, savePolicy, updateInventorySettings } from "@/lib/inventory/settings";
 import { simulateQuotaTransfer } from "@/lib/inventory/transfer-service";
 import { GatedRemoteTransferExecutor } from "@/lib/inventory/transfer";
@@ -452,6 +452,23 @@ describe("Inventory Core — falhas, concorrência, snapshots e transferências"
     expect(await position(p)).toMatchObject({ ads: "9", safe: 9 });
     const [ignored] = await sql().query<{ status: string }>(`SELECT status FROM inventory_movements WHERE event_type = 'ADS_STOCK_SNAPSHOT' AND status = 'IGNORED_STALE'`);
     expect(ignored.status).toBe("IGNORED_STALE");
+  });
+
+  it("prazo curto: sem tempo para a leitura ao vivo, nenhuma consulta à ADS e o cálculo usa o último saldo (não vira ERROR)", async () => {
+    const p = await product(302);
+    await stock(p, 4, { fetchedAt: new Date(Date.now() - 30 * 60_000) });
+    await listing("MLB42", p, { qty: 4 });
+    const r = await run({ live: true, deadline: Date.now() + 15_000 });
+    expect(network).not.toHaveBeenCalled();
+    expect(r.summary).toMatchObject({ liveRead: { read: 0, skipped: 1 }, processedProducts: 1 });
+    expect(await position(p)).toMatchObject({ adsStatus: "KNOWN", ads: "4", safe: 4, mlDesired: 4 });
+  });
+
+  it("prazo da leitura ao vivo: no máximo metade do restante e folga por produto para o cálculo", () => {
+    expect(liveReadDeadline(undefined, 100)).toBeUndefined();
+    expect(liveReadDeadline(1_000 + 60_000, 10, 1_000)).toBe(1_000 + 30_000);
+    expect(liveReadDeadline(1_000 + 60_000, 300, 1_000)).toBe(1_000 + 10_000);
+    expect(liveReadDeadline(1_000 + 20_000, 300, 1_000)).toBe(1_000);
   });
 
   it("falha do Mercado Livre (quantidade anunciada desconhecida): não confirma nada e não aumenta outros canais", async () => {

@@ -29,6 +29,8 @@ import { processWriteJobs, resolveUncertainJobs, type WorkerDeps } from "./write
  */
 const TICK_LEASE = "nuvemshop-tick";
 const CATALOG_REFRESH_HOURS = 6;
+/** Tempo máximo do passo de estoque (releitura na Nuvemshop + Inventory Core + decisões). Era 50 s. */
+const STOCK_STEP_MS = 80_000;
 
 export interface NuvemshopTickResult {
   ran: boolean;
@@ -66,8 +68,9 @@ export async function runNuvemshopTick(sql: Sql, deadline: number, deps: WorkerD
       return reconcileOrders(sql, (await getConn()).client, store.storeId, { deadline: Math.min(deadline, Date.now() + 30_000) });
     });
     await step("uncertain", 8_000, async () => resolveUncertainJobs(sql, { ...deps, client: await getConn() }));
+    // Estoque antes do preço: estoque desatualizado vende o que não existe; preço desatualizado espera o próximo ciclo.
+    await step("stock", 25_000, async () => ((await isRunDue(sql, "STOCK")) ? runStockSync(sql, { trigger: "scheduler", requestedBy: "system:nuvemshop-auto", deadline: Math.min(deadline, Date.now() + STOCK_STEP_MS), deps: { ...deps, client: await getConn() } }) : "não vencida"));
     await step("price", 25_000, async () => ((await isRunDue(sql, "PRICE")) ? runPriceSync(sql, { trigger: "scheduler", requestedBy: "system:nuvemshop-auto", deadline: Math.min(deadline, Date.now() + 45_000), deps: { ...deps, client: await getConn() } }) : "não vencida"));
-    await step("stock", 25_000, async () => ((await isRunDue(sql, "STOCK")) ? runStockSync(sql, { trigger: "scheduler", requestedBy: "system:nuvemshop-auto", deadline: Math.min(deadline, Date.now() + 50_000), deps: { ...deps, client: await getConn() } }) : "não vencida"));
     await step("writer", 10_000, async () => processWriteJobs(sql, { deadline: Math.min(deadline, Date.now() + 40_000), deps: { ...deps, client: await getConn() } }));
     await step("catalog", 12_000, async () => {
       const [last] = await sql.query<{ at: Date | null }>(`SELECT max(created_at) AS at FROM nuvemshop_catalog_import_jobs WHERE store_id = $1`, [store.storeId]);
