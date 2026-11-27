@@ -17,6 +17,7 @@ import { classifyError } from "./errors";
 import { processEvents } from "./events";
 import { recoverMissedFeeds } from "./missed-feeds";
 import { recoverRecentOrders } from "./orders";
+import { pruneSyncHistory } from "../maintenance/retention";
 import { getConnectedStore as getNuvemshopStore } from "../nuvemshop/store";
 import { runNuvemshopTick } from "../nuvemshop/scheduler";
 
@@ -94,6 +95,8 @@ const PRICE_RESERVE_MS = 60_000;
  * Era 60 s: o passo de estoque ficava com o que sobrava dos webhooks/pedidos/preço e não terminava o cálculo.
  */
 const NUVEMSHOP_RESERVE_MS = 100_000;
+/** Tempo máximo da retenção do histórico por tick. */
+const RETENTION_BUDGET_MS = 20_000;
 /** Releitura automática da lista de anúncios da conta (inventário usado por estoque e preço). */
 const INVENTORY_REFRESH_MIN = 60;
 const INVENTORY_BUDGET_MS = 45_000;
@@ -204,6 +207,9 @@ export async function runTick(sql: Sql, trigger: Trigger): Promise<TickResult> {
   // Um evento pode levar alguns segundos (pedido + envio): o orçamento é checado antes de cada um.
   // 10 s para a fila primeiro; o que sobrar do ciclo volta para ela no fim (depois de estoque e preço).
   const events = await processEvents({ sql, budgetMs: 10_000 });
+  // Retenção do histórico das sincronizações: no começo do tick (no fim nunca sobra tempo), no máximo 1×/h;
+  // a primeira limpeza grande continua nos ticks seguintes até terminar.
+  await pruneSyncHistory(sql, { deadline: Date.now() + RETENTION_BUDGET_MS }).catch((err) => logger.warn("Falha na retenção do histórico", { err }));
   const jobs: SyncJobResult[] = [];
   // Sem conta conectada as rotinas não têm o que consultar; os eventos continuam guardados.
   const conn = await getStore().getCurrentConnection();
