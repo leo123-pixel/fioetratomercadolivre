@@ -523,6 +523,38 @@ describe("Estoque automático (fluxo com Inventory Core)", () => {
     expect(ns.stockOf(100)).toBe(2);
   });
 
+  it("incidente 27/11/2026: loja com 10, ADS com 7 lida há 22 h → saldo antigo ainda reduz a loja (aumento seguiria travado)", async () => {
+    const p = await scenario({ ads: 7, nsStock: 10 });
+    await sql().execute(`UPDATE product_stocks SET fetched_at = now() - interval '22 hours' WHERE product_id = $1`, [p]);
+    await protect();
+    await pilot("STOCK");
+    const r = await stockRun();
+    const [it] = await items(r.runId!);
+    expect(it).toMatchObject({ decision: "WRITE", current: "10" });
+    expect(Number(it.target)).toBeLessThanOrEqual(7);
+    await writer();
+    expect(ns.stockOf(100)).toBe(Number(it.target));
+  });
+
+  it("Inventory Core sem tempo para o produto: CORE_TIME_LIMIT, nada é escrito e a variante não perde a vez; a execução seguinte escreve", async () => {
+    await scenario({ ads: 0, nsStock: 5 });
+    await protect();
+    await pilot("STOCK");
+    // Prazo já esgotado para o núcleo (o passo reserva tempo para registrar as decisões).
+    const r = await runStockSync(sql(), { trigger: "manual", requestedBy: ACTOR, deps: deps(), adsLive: false, deadline: Date.now() + 2_000 });
+    expect((await items(r.runId!))[0]).toMatchObject({ decision: "BLOCKED", reasonCode: "CORE_TIME_LIMIT", current: "5" });
+    expect(r.summary).toMatchObject({ inventoryPartial: true, decisions: { coreTimeLimit: 1 } });
+    const sv = await sql().query(`SELECT evaluated_at FROM nuvemshop_sync_variants WHERE variant_id = 100 AND kind = 'STOCK' AND evaluated_at IS NOT NULL`);
+    expect(sv).toHaveLength(0);
+    expect(await jobs()).toHaveLength(0);
+    await writer();
+    expect(ns.stockOf(100)).toBe(5);
+    const again = await stockRun();
+    expect((await items(again.runId!))[0]).toMatchObject({ decision: "WRITE", current: "5", target: "0" });
+    await writer();
+    expect(ns.stockOf(100)).toBe(0);
+  });
+
   it("aumento bloqueado sem proteção de pedidos; redução continua permitida; ativação do piloto exige a proteção", async () => {
     await scenario({ ads: 10, nsStock: 0 });
     expect((await stockActivationBlockers(sql())).join(" ")).toMatch(/Proteção de pedidos/);

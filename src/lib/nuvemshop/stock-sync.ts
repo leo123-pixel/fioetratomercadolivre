@@ -40,7 +40,13 @@ import { hasScope, nuvemshopWriteEnv } from "./write-gate";
  * responsabilidade em docs/nuvemshop-fase2.md.
  */
 export const STOCK_LEASE = "nuvemshop-stock-sync";
-const MAX_VARIANTS_PER_RUN = 300;
+/**
+ * Variantes por execução. Com 300 o Inventory Core não terminava no tempo do ciclo (0 a 207 produtos calculados por
+ * execução em 27/11/2026) e quase todas ficavam sem cota; 150 cabe no orçamento do passo de estoque.
+ */
+export const MAX_VARIANTS_PER_RUN = 150;
+/** Tempo reservado, depois do Inventory Core, para avaliar e registrar cada variante (≈2 consultas por variante). */
+const evaluationReserveMs = (variants: number) => 4_000 + variants * 40;
 
 export interface StockProposal {
   target: number | null;
@@ -223,8 +229,16 @@ async function executeStock(
   // Saldo ADS ao vivo (GET) no horário da ADS; fora dele, o cache (que envelhece e só permite reduzir).
   const live = opts.adsLive ?? adsHoursState(stockSettings).open;
   let inventoryRunId: string;
+  let inventoryPartial: boolean;
   try {
-    inventoryRunId = (await runShadowReconciliation(sql, { requestedBy: `nuvemshop-stock:${opts.requestedBy}`, live, productIds, deadline: opts.deadline })).runId;
+    const core = await runShadowReconciliation(sql, {
+      requestedBy: `nuvemshop-stock:${opts.requestedBy}`,
+      live,
+      productIds,
+      deadline: opts.deadline === undefined ? undefined : opts.deadline - evaluationReserveMs(candidates.length),
+    });
+    inventoryRunId = core.runId;
+    inventoryPartial = core.status === "PARTIAL";
   } catch (err) {
     if (err instanceof InventoryError && (err.code === "already_running" || err.code === "ads_closed")) return { status: "SKIPPED", summary: { reason: err.message }, inventoryRunId: null };
     throw err;
@@ -237,6 +251,8 @@ async function executeStock(
     [inventoryRunId],
   );
   const proposals = new Map<string, StockProposal>();
+  // Produtos que o núcleo calculou nesta execução (os demais ficaram de fora por tempo, se ela foi parcial).
+  const computed = new Set(rows.map((r) => r.productId));
   for (const r of rows) {
     for (const l of r.details?.listings ?? []) {
       const prev = proposals.get(l.key);
@@ -271,7 +287,7 @@ async function executeStock(
   const unconfirmed = await productsWithUnconfirmedOrders(sql, policy.unconfirmedOrderGraceHours);
   const unmappedNs = await nsProductsWithUnmappedOrders(sql, storeId);
 
-  const counts: Record<string, number> = { IN_SYNC: 0, WRITE: 0, SHADOW: 0, BLOCKED: 0, NOT_SELECTED: 0, enqueued: 0, activeJob: 0, limited: 0 };
+  const counts: Record<string, number> = { IN_SYNC: 0, WRITE: 0, SHADOW: 0, BLOCKED: 0, NOT_SELECTED: 0, enqueued: 0, activeJob: 0, limited: 0, coreTimeLimit: 0 };
   const writeMode = mode === "PILOT" || mode === "AUTOMATIC";
   for (const c of candidates) {
     const key = `ns:${storeId}:${c.variantId}`;
@@ -284,7 +300,10 @@ async function executeStock(
       if (n) increaseBlockers.push(`${n} venda(s) Nuvemshop sem baixa confirmada na ADS além do prazo`);
     }
     if (unmappedNs.has(c.nsProductId)) increaseBlockers.push("pedido recente com variante sem vínculo ADS neste produto");
-    const ev = evaluateStock({ remote: refreshed.variants.get(c.variantId), location, proposal: proposals.get(key), increaseBlockers: [...new Set(increaseBlockers)] });
+    let ev = evaluateStock({ remote: refreshed.variants.get(c.variantId), location, proposal: proposals.get(key), increaseBlockers: [...new Set(increaseBlockers)] });
+    // O núcleo não chegou a este produto (execução parcial por tempo): não conta como avaliada, volta primeiro na próxima.
+    const coreTimedOut = inventoryPartial && !proposals.has(key) && c.components.some((x) => !computed.has(x.productId));
+    if (coreTimedOut) ev = { ...ev, decision: "BLOCKED", reasonCode: "CORE_TIME_LIMIT", reason: "O Inventory Core não chegou a este produto no tempo desta execução: fica primeiro na fila da próxima" };
     let decision: string = ev.decision;
     let reasonCode = ev.reasonCode;
     let reason = ev.reason;
@@ -328,16 +347,17 @@ async function executeStock(
       }
     }
     counts[decision] = (counts[decision] ?? 0) + 1;
+    if (coreTimedOut) counts.coreTimeLimit++;
     await sql.execute(
       `INSERT INTO nuvemshop_sync_items (run_id, kind, store_id, nuvemshop_product_id, variant_id, product_id, location_id, current_value, target_value, decision, reason_code, reason, job_id, details)
        VALUES ($1::uuid, 'STOCK', $2, $3::bigint, $4::bigint, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13::jsonb)`,
       [runId, storeId, c.nsProductId, c.variantId, c.components[0]?.productId ?? null, location.locationId, ev.current === null ? null : String(ev.current), ev.target === null ? null : String(ev.target), decision, reasonCode, reason, jobId, JSON.stringify({ components: c.components, reliability: proposals.get(key)?.reliability ?? null })],
     );
-    if (!simulate) await recordVariantDecision(sql, { storeId, variantId: c.variantId, kind: "STOCK", decision, reasonCode, reason, target: ev.target === null ? null : String(ev.target), remote: ev.current === null ? null : String(ev.current) });
+    if (!simulate && !coreTimedOut) await recordVariantDecision(sql, { storeId, variantId: c.variantId, kind: "STOCK", decision, reasonCode, reason, target: ev.target === null ? null : String(ev.target), remote: ev.current === null ? null : String(ev.current) });
   }
   return {
     status: "COMPLETED",
     inventoryRunId,
-    summary: { mode, variants: candidates.length, inventoryRunId, adsLive: live, orderProtection: protection, location: location.locationId ?? location.problem?.code, mlLegacyWriterProducts: mlWriters.size, decisions: counts },
+    summary: { mode, variants: candidates.length, inventoryRunId, inventoryPartial, adsLive: live, orderProtection: protection, location: location.locationId ?? location.problem?.code, mlLegacyWriterProducts: mlWriters.size, decisions: counts },
   };
 }

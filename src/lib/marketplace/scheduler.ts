@@ -89,8 +89,11 @@ export const TICK_BUDGET_MS = 240_000;
 const TICK_JOB_BUDGET_MS = 60_000;
 /** Reservado ao preço automático no fim do tick, quando ligado. */
 const PRICE_RESERVE_MS = 60_000;
-/** Reservado ao ciclo da Nuvemshop no fim do tick, quando há loja conectada (não depende da conta ML). */
-const NUVEMSHOP_RESERVE_MS = 60_000;
+/**
+ * Reservado ao ciclo da Nuvemshop no fim do tick, quando há loja conectada (não depende da conta ML).
+ * Era 60 s: o passo de estoque ficava com o que sobrava dos webhooks/pedidos/preço e não terminava o cálculo.
+ */
+const NUVEMSHOP_RESERVE_MS = 100_000;
 /** Releitura automática da lista de anúncios da conta (inventário usado por estoque e preço). */
 const INVENTORY_REFRESH_MIN = 60;
 const INVENTORY_BUDGET_MS = 45_000;

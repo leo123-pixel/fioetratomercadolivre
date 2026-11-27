@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { getAllPagesForIds, isAdsOutage } from "../ads/client";
+import { AdsNoTimeError, getAllPagesForIds, isAdsOutage } from "../ads/client";
 import { adsHoursState } from "../ads/hours";
 import { mapStocks } from "../ads/schemas";
 import { acquireLease, releaseLease } from "../imports/jobs";
@@ -114,27 +114,44 @@ export async function runShadowReconciliation(sql: Sql, opts: ShadowRunOptions):
   }
 }
 
-async function fetchLiveStocks(products: SkuRecord[], deadline?: number): Promise<Map<number, LiveStock>> {
+/**
+ * Leitura ao vivo na ADS em lotes de 20, sem passar de `liveDeadline`.
+ *
+ * Produto que não chegou a ser consultado (acabou o tempo reservado à leitura, ou a ADS caiu num lote anterior)
+ * fica SEM entrada: o cálculo usa o último saldo conhecido (cache ou snapshot vigente), que envelhece e só permite
+ * reduzir. Só o lote que de fato falhou vira ERROR. Antes, uma ADS lenta consumia o prazo inteiro e o núcleo não
+ * calculava cota nenhuma (incidente Nuvemshop de 27/11/2026: loja com 10, ADS com 7).
+ */
+async function fetchLiveStocks(products: SkuRecord[], liveDeadline?: number): Promise<{ live: Map<number, LiveStock>; skipped: number }> {
   const out = new Map<number, LiveStock>();
-  let stopped: string | null = null;
   for (let i = 0; i < products.length; i += 20) {
     const chunk = products.slice(i, i + 20);
     const fetchedAt = new Date();
     try {
-      if (stopped) throw new Error(stopped);
       // Somente leitura (GET). Diferente da sincronização atual, NÃO grava no cache product_stocks.
-      const items = await getAllPagesForIds("estoques", chunk.map((p) => p.adsProductId), { deadline });
+      const items = await getAllPagesForIds("estoques", chunk.map((p) => p.adsProductId), { deadline: liveDeadline });
       const mapped = mapStocks(items).rows;
       for (const p of chunk) {
         out.set(p.productId, { status: "KNOWN", rows: mapped.filter((r) => r.ads_product_id === p.adsProductId).map((r) => ({ branchId: r.branch_id, quantity: r.quantity })), fetchedAt });
       }
     } catch (err) {
+      if (err instanceof AdsNoTimeError) return { live: out, skipped: products.length - i };
       const message = err instanceof Error ? err.message.slice(0, 300) : "Erro na ADS";
-      if (isAdsOutage(err)) stopped = message;
       for (const p of chunk) out.set(p.productId, { status: "ERROR", rows: [], fetchedAt, error: message });
+      if (isAdsOutage(err)) return { live: out, skipped: products.length - i - chunk.length };
     }
   }
-  return out;
+  return { live: out, skipped: 0 };
+}
+
+/**
+ * Prazo da leitura ao vivo: no máximo metade do tempo restante, deixando ~150 ms por produto (mais folga) para o
+ * cálculo dos pools. Sem prazo, sem limite.
+ */
+export function liveReadDeadline(deadline: number | undefined, products: number, now = Date.now()): number | undefined {
+  if (deadline === undefined) return undefined;
+  const left = deadline - now;
+  return now + Math.max(0, Math.min(left * 0.5, left - products * 150 - 5_000));
 }
 
 function snapshotFor(
@@ -236,10 +253,13 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
     [productIds],
   );
   let live = new Map<number, LiveStock>();
+  let liveSkipped = 0;
   if (opts.live) {
     const withListings = new Set(listings.flatMap((l) => l.components.map((c) => c.productId)));
     const order = [...productIds].sort((a, b) => Number(withListings.has(b)) - Number(withListings.has(a)));
-    live = await fetchLiveStocks(order.slice(0, settings.liveAdsMaxProducts).map((id) => skus.get(id)!), opts.deadline);
+    const fetched = await fetchLiveStocks(order.slice(0, settings.liveAdsMaxProducts).map((id) => skus.get(id)!), liveReadDeadline(opts.deadline, productIds.length));
+    live = fetched.live;
+    liveSkipped = fetched.skipped;
   }
   const policies = await effectivePolicies(sql, productIds);
   const legacyPending = await pendingConsumption(sql, productIds, stockSettings.pendingOrderWindowDays);
@@ -436,6 +456,8 @@ async function execute(sql: Sql, runId: string, correlationId: string, opts: Sha
       mode: "SHADOW",
       remoteWrites: 0,
       source: opts.live ? "ADS_LIVE" : "ADS_CACHE",
+      // Produtos sem leitura ao vivo nesta execução (tempo ou queda da ADS): calculados pelo último saldo conhecido.
+      liveRead: opts.live ? { read: live.size, skipped: liveSkipped } : null,
       products: productIds.length,
       processedProducts: processed,
       ...counters,
